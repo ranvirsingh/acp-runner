@@ -12,6 +12,8 @@ agent folder
         → vendor CLI (Claude Code / Codex / Gemini)
 ```
 
+> **Beta.** Until 1.0, any release can change the `agent.yaml` format or the CLI. Install with `acp-runner@beta` and pin the exact version.
+
 Uses the Zed **Agent Client Protocol** (`@agentclientprotocol/sdk`). Not IBM/BeeAI ACP, not A2A, not `acp-sdk`.
 
 ## Contents
@@ -126,19 +128,19 @@ steps:
     provider: codex         # different provider → swap
     vars:
       review_focus: security and edge cases
-    file: prompts/harden.md # long bodies live outside the YAML
+    do: { file: prompts/harden.md } # long bodies live outside the YAML
   - id: second-opinion
     provider: gemini-pro    # a provider declared above
     vars:
       review_focus: anything the last reviewer missed
-    file: prompts/harden.md
+    do: { file: prompts/harden.md }
 ```
 
 ### Two kinds of step
 
 | Kind | Looks like | What happens |
 | --- | --- | --- |
-| **Model turn** | has `do`, `file` or `promptRef` — or nothing at all | The text is sent to the vendor CLI as one `session/prompt` |
+| **Model turn** | has `do` or `promptRef` | The text is sent to the vendor CLI as one `session/prompt` |
 | **Script** | has `run:` and no prompt body | A shell command runs in `--cwd`. Exit 0 is success, anything else is failure |
 
 A model step may **also** carry `run:`. Then the turn happens first and the command runs afterwards as its check — that is how "do the work, then prove it" fits in one step.
@@ -165,9 +167,8 @@ A model step may **also** carry `run:`. Then the turn happens first and the comm
 | Field | Meaning |
 | --- | --- |
 | `id` | Label for the turn. Must be unique, and cannot be the reserved `end` or `fail` |
-| `do` | Turn text, inline |
-| `file` | Turn text from a file, relative to the YAML. Cannot be combined with `do` |
-| `promptRef` | Turn text from an MCP server's prompt catalogue. Exclusive with `do`, `file` and `run` |
+| `do` | Turn text — inline, or `{ file: path }` read from a file relative to the YAML |
+| `promptRef` | Turn text from an MCP server's prompt catalogue. Exclusive with `do` and `run` |
 | `run` | Shell command — a pure script step, or the check that follows a turn |
 | `provider` / `model` | Override for this step only |
 | `vars` | Variable overrides for this step |
@@ -186,7 +187,7 @@ Anything longer than a few lines belongs in its own file:
 ```yaml
 steps:
   - id: harden
-    file: prompts/harden.md
+    do: { file: prompts/harden.md }
 ```
 
 The path resolves against the **YAML file's own directory**. A prompt file is a template like an inline body, so `{{...}}` inside it is rendered.
@@ -224,7 +225,7 @@ No context variables are injected automatically. To use the working directory in
 
 ### Automatic failure context
 
-The runner attaches failure details automatically when the next model turn runs. Write only the task in `do`, `file` or `promptRef`; no feedback placeholder is needed:
+The runner attaches failure details automatically when the next model turn runs. Write only the task in `do` or `promptRef`; no feedback placeholder is needed:
 
 ```yaml
 - id: implement
@@ -239,7 +240,7 @@ Failure blocks are capped at 16,384 UTF-8 bytes, including their header. Long ou
 
 `{{feedback}}`, `{{vars.feedback}}` and their `${{ ... }}` forms are rejected by lint and template rendering with an instruction to remove them. Escaped literals and text returned by MCP prompts are not reinterpreted as runner templates.
 
-Every model step needs a body — `do:`, `prompt:`, `file:` or `promptRef:`. A step with none of those and no `run:` is rejected when the runbook loads. There is no command-line goal to fall back on: the prompt lives in the runbook.
+Every model step needs a body — `do:` or `promptRef:`. A step with none of those and no `run:` is rejected when the runbook loads. There is no command-line goal to fall back on: the prompt lives in the runbook.
 
 ### Secrets
 
@@ -387,7 +388,7 @@ A variable can be bound to an MCP resource, and a turn body can come from a serv
 ```yaml
 steps:
   - id: investigate
-    file: prompts/investigate.md
+    do: { file: prompts/investigate.md }
     vars:
       schema_ddl: { resource: "postgres://prod/schemas/public", server: database }
   - id: review
@@ -401,7 +402,7 @@ steps:
 
 The runner reads the resource over its own connection, so `server` does not have to appear in the step's `servers` scope — reading a resource exposes no tool to the model. Text content is bound as-is; a blob, a missing resource, a read error, or anything over 256 KiB fails the step the way a missing `{ file }` does. Bigger data belongs on disk via a `run:` step.
 
-`promptRef` is a fourth kind of step body, exclusive with `do`, `file` and `run`. Its `arguments` values are templates. The runner calls `prompts/get` and concatenates the text of every returned message, blank line between messages; a message with non-text content fails the step. Any pending failure is sent as a separate ACP text block, just as for `do` and `file`. The flattened prompt text is left unchanged.
+`promptRef` is the other kind of step body, exclusive with `do` and `run`. Its `arguments` values are templates. The runner calls `prompts/get` and concatenates the text of every returned message, blank line between messages; a message with non-text content fails the step. Any pending failure is sent as a separate ACP text block, just as for `do`. The flattened prompt text is left unchanged.
 
 ## Providers, sessions and swaps
 

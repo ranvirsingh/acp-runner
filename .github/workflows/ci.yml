@@ -39,7 +39,7 @@ jobs:
       - run: bun run compile
       - name: smoke compiled executable
         run: |
-          test "$(dist-bun/acp-runner --version)" = "0.1.0"
+          test "$(dist-bun/acp-runner --version)" = "0.1.0-beta.1"
           set +e
           out=$(dist-bun/acp-runner --help 2>&1)
           code=$?

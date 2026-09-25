@@ -29,17 +29,14 @@ export function loadAgentYaml(path: string): AgentYaml {
 }
 
 export function stepBody(step: AgentStep, baseDir: string): string | undefined {
-  if (step.file) {
-    if (step.do != null) {
-      throw new Error(`step ${step.id}: use either do or file, not both`);
-    }
+  if (step.do == null) return undefined;
+  if (typeof step.do === "object") {
     try {
-      return readFileSync(resolve(baseDir, step.file), "utf8");
+      return readFileSync(resolve(baseDir, step.do.file), "utf8");
     } catch {
-      throw new Error(`step ${step.id}: cannot read ${step.file}`);
+      throw new Error(`step ${step.id}: cannot read ${step.do.file}`);
     }
   }
-  if (step.do == null) return undefined;
   return step.do.trim().length === 0 ? undefined : step.do;
 }
 

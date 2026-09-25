@@ -34,8 +34,7 @@ export type StepCommand = string | { command: string; args?: string[] };
 
 export interface AgentStep {
   id: string;
-  do?: string;
-  file?: string;
+  do?: string | { file: string };
   promptRef?: PromptRef;
   provider?: ProviderId;
   model?: string;
@@ -281,5 +280,5 @@ export interface SessionContext {
 
 export function isScriptStep(step?: AgentStep): boolean {
   if (!step) return false;
-  return Boolean(step.run && !step.do && !step.file);
+  return Boolean(step.run && !step.do);
 }

@@ -6,8 +6,11 @@ const RESOURCES = {
   "mem://huge": { type: "text", text: "x".repeat(300 * 1024) },
 };
 
+let clientVersion = "";
+
 function handle(method, params) {
   if (method === "initialize") {
+    clientVersion = params?.clientInfo?.version ?? "";
     return {
       protocolVersion: params?.protocolVersion ?? "2024-11-05",
       capabilities: { tools: {}, resources: {}, prompts: {} },
@@ -17,6 +20,9 @@ function handle(method, params) {
   if (method === "tools/list") return { tools: [] };
   if (method === "resources/list") {
     return { resources: Object.keys(RESOURCES).map((uri) => ({ uri, name: uri })) };
+  }
+  if (method === "resources/read" && params?.uri === "mem://client-version") {
+    return { contents: [{ uri: params.uri, mimeType: "text/plain", text: clientVersion }] };
   }
   if (method === "resources/read") {
     const found = RESOURCES[params?.uri];

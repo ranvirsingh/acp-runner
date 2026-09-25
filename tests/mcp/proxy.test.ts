@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { McpProxy } from "../../src/mcp/proxy.ts";
 import type { ResolvedMcpServer } from "../../src/types.ts";
+import { RUNNER_VERSION } from "../../src/version.ts";
 
 const greet = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -115,5 +116,22 @@ test("McpProxy: reads a resource and flattens a prompt", async () => {
   );
   await assert.rejects(() => proxy.readResource("cat", "mem://blob"), /blob/);
   await assert.rejects(() => proxy.readResource("cat", "mem://huge"), /256/);
+  await proxy.close();
+});
+
+test("McpProxy: the endpoint reports the runner version", async () => {
+  const proxy = new McpProxy([greetServer()]);
+  const client = await connected(proxy);
+  assert.equal(client.getServerVersion()?.version, RUNNER_VERSION);
+  await client.close();
+  await proxy.close();
+});
+
+test("McpProxy: downstream servers see the runner version", async () => {
+  const fixture = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/mcp-catalogue.mjs");
+  const proxy = new McpProxy([
+    { type: "stdio", name: "cat", command: process.execPath, args: [fixture], env: [] },
+  ]);
+  assert.equal(await proxy.readResource("cat", "mem://client-version"), RUNNER_VERSION);
   await proxy.close();
 });

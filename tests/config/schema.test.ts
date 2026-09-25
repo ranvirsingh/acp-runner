@@ -315,9 +315,9 @@ test("loadAgentYaml: rejects a promptRef naming an undeclared server", () => {
   });
 });
 
-test("loadAgentYaml: rejects a step with no do, file, promptRef or run", () => {
+test("loadAgentYaml: rejects a step with no do, promptRef or run", () => {
   withYamlFile("steps:\n  - id: implement\n", (path) => {
-    assert.throws(() => loadAgentYaml(path), /step must have do, file, promptRef or run/);
+    assert.throws(() => loadAgentYaml(path), /step must have do, promptRef or run/);
   });
 });
 
@@ -327,13 +327,31 @@ test("loadAgentYaml: a step body is do, not prompt", () => {
   });
 });
 
-test("loadAgentYaml: promptRef is exclusive with do, file and run", () => {
+test("loadAgentYaml: promptRef is exclusive with do and run", () => {
   withYamlFile(
     "providers:\n  mcpServers:\n    jira:\n      command: node\nsteps:\n  - id: one\n    run: bun test\n    promptRef:\n      server: jira\n      name: r\n",
     (path) => {
-      assert.throws(() => loadAgentYaml(path), /promptRef is exclusive with do, file and run/);
+      assert.throws(() => loadAgentYaml(path), /promptRef is exclusive with do and run/);
     },
   );
+});
+
+test("loadAgentYaml: do accepts a file source", () => {
+  withYamlFile("steps:\n  - id: draft\n    do: { file: templates/draft.md }\n", (path) => {
+    assert.deepEqual(loadAgentYaml(path).steps[0].do, { file: "templates/draft.md" });
+  });
+});
+
+test("loadAgentYaml: a step-level file key is rejected", () => {
+  withYamlFile("steps:\n  - id: draft\n    file: templates/draft.md\n", (path) => {
+    assert.throws(() => loadAgentYaml(path), /Unrecognized key\(s\) in object: 'file'/);
+  });
+});
+
+test("loadAgentYaml: do rejects an object that is not a file source", () => {
+  withYamlFile("steps:\n  - id: draft\n    do: { path: templates/draft.md }\n", (path) => {
+    assert.throws(() => loadAgentYaml(path));
+  });
 });
 
 test("loadAgentYaml: accepts a step whose only body is run", () => {

@@ -24,7 +24,7 @@ Or use the npm archive without Bun (replace the archive path):
 
 ```sh
 work=$(mktemp -d)
-npm install --prefix "$work" /absolute/path/acp-runner-0.1.0.tgz
+npm install --prefix "$work" /absolute/path/acp-runner-0.1.0-beta.1.tgz
 cp -R "$work/node_modules/acp-runner/examples/hello-world" "$work/workflow"
 "$work/node_modules/.bin/acp-runner" "$work/workflow" --cwd "$work/workflow" --trace file
 cat "$work/workflow/release-notes.md"

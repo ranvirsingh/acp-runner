@@ -54,7 +54,7 @@ test("packaged CLI: prints its version without also executing the bundled linter
   const result = spawnSync("node", [join(root, "dist/cli.js"), "--version"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, "");
-  assert.equal(result.stdout.trim(), "0.1.0");
+  assert.equal(result.stdout.trim(), "0.1.0-beta.1");
 });
 
 test("packaged CLI: prints its version through an npm-style executable symlink", () => {
@@ -64,7 +64,7 @@ test("packaged CLI: prints its version through an npm-style executable symlink",
     symlinkSync(join(root, "dist/cli.js"), executable);
     const result = spawnSync("node", [executable, "--version"], { cwd, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), "0.1.0");
+    assert.equal(result.stdout.trim(), "0.1.0-beta.1");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -93,7 +93,7 @@ test("packaged CLI: executes a runbook outside the repository through an executa
 test("compiled binary: prints version without linting errors", () => {
   if (!process.versions.bun) return;
   const out = execSync("./dist-bun/acp-runner --version", { cwd: root, encoding: "utf8", stdio: "pipe" });
-  assert.equal(out.trim(), "0.1.0");
+  assert.equal(out.trim(), "0.1.0-beta.1");
 });
 
 test("compiled binary: checksum file matches the shipped binary", () => {

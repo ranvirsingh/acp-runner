@@ -219,14 +219,14 @@ test("needsNewBody: a step that names no model inherits the live one", () => {
   );
 });
 
-test("resolveStepPrompt: steps[].file loads the body relative to the yaml", () => {
+test("resolveStepPrompt: do { file } loads the body relative to the yaml", () => {
   const dir = mkdtempSync(join(tmpdir(), "acp-stepfile-"));
   try {
     writeFileSync(join(dir, "harden.md"), "Review the workspace.\nFocus on {{review_focus}}.\n");
     const config = configFor(
       {
         vars: { review_focus: "security" },
-        steps: [{ id: "harden", file: "harden.md" }],
+        steps: [{ id: "harden", do: { file: "harden.md" } }],
       },
       { yamlPath: join(dir, "agent.yaml"), cwd: "/tmp/project" },
     );
@@ -240,11 +240,11 @@ test("resolveStepPrompt: steps[].file loads the body relative to the yaml", () =
   }
 });
 
-test("resolveStepPrompt: a missing steps[].file throws and names the step", () => {
+test("resolveStepPrompt: a missing do { file } throws and names the step", () => {
   const dir = mkdtempSync(join(tmpdir(), "acp-stepfile-"));
   try {
     const config = configFor(
-      { steps: [{ id: "harden", file: "absent.md" }] },
+      { steps: [{ id: "harden", do: { file: "absent.md" } }] },
       { yamlPath: join(dir, "agent.yaml") },
     );
 
@@ -255,13 +255,6 @@ test("resolveStepPrompt: a missing steps[].file throws and names the step", () =
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test("stepBody: file and do together is a conflict", () => {
-  assert.throws(
-    () => stepBody({ id: "harden", file: "harden.md", do: "inline" }, "."),
-    /step harden: use either do or file, not both/,
-  );
 });
 
 test("loadAgentYaml: rejects a runbook still wrapped in agent:", () => {
@@ -320,7 +313,7 @@ test("resolveRunbookPath: a folder with no agent.yaml names the folder", () => {
 test("resolveStepPrompt: a folder's prompt file resolves inside the folder", () => {
   withAgentFolder(
     {
-      "agent.yaml": "vars:\n  focus: security\nsteps:\n  - id: harden\n    file: prompts/body.md\n",
+      "agent.yaml": "vars:\n  focus: security\nsteps:\n  - id: harden\n    do: { file: prompts/body.md }\n",
       "prompts/body.md": "Review for {{focus}}.\n",
     },
     (dir) => {

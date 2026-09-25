@@ -43,7 +43,7 @@ steps:
   - id: draft
     provider: writer
     servers: []
-    file: templates/draft.md
+    do: { file: templates/draft.md }
     vars:
       release: { file: release.txt }
       release_style: { resource: "mem://release-style", server: release }

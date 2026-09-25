@@ -16,13 +16,15 @@ const resourceSource = z
   .object({ resource: z.string().min(1), server: z.string().min(1) })
   .strict();
 
+const fileSource = z.object({ file: z.string().min(1) }).strict();
+
 const varSource = z.union([
   z.string(),
   z.number(),
   z.boolean(),
   z.null(),
   z.object({ env: z.string().min(1) }).strict(),
-  z.object({ file: z.string().min(1) }).strict(),
+  fileSource,
   resourceSource,
 ]);
 
@@ -95,8 +97,7 @@ const stepCommand = z.union([
 const step = z
   .object({
     id: z.string().min(1),
-    do: z.string().optional(),
-    file: z.string().min(1).optional(),
+    do: z.union([z.string(), fileSource]).optional(),
     promptRef: promptRef.optional(),
     provider: providerId.optional(),
     model: z.string().min(1).optional(),
@@ -113,24 +114,20 @@ const step = z
       .optional(),
   })
   .strict()
-  .refine((value) => !(value.file && value.do != null), {
-    message: "use either do or file, not both",
-  })
   .refine(
     (value) =>
       !(
         value.promptRef &&
-        (value.do != null || value.file != null || value.run != null)
+        (value.do != null || value.run != null)
       ),
-    { message: "promptRef is exclusive with do, file and run" },
+    { message: "promptRef is exclusive with do and run" },
   )
   .refine(
     (value) =>
       value.do != null ||
-      value.file != null ||
       value.promptRef != null ||
       value.run != null,
-    { message: "step must have do, file, promptRef or run" },
+    { message: "step must have do, promptRef or run" },
   );
 
 export const RESERVED_TERMINAL_TARGETS = new Set(["end", "fail"]);

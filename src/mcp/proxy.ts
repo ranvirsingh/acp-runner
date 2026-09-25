@@ -14,6 +14,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { ResolvedMcpServer } from "../types.js";
+import { RUNNER_VERSION } from "../version.js";
 import { qualifyToolName, splitToolName, toolAllowed, visibleTools, type StepScope } from "./scope.js";
 
 export const RESOURCE_LIMIT_BYTES = 256 * 1024;
@@ -67,7 +68,7 @@ export class McpProxy {
     const spec = this.declared.get(name);
     if (!spec) throw new Error(`unknown server "${name}"`);
 
-    const client = new Client({ name: "acp-runner-proxy", version: "0.1.0" });
+    const client = new Client({ name: "acp-runner-proxy", version: RUNNER_VERSION });
     await client.connect(transportFor(spec));
     client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
       void this.refreshTools(name);
@@ -173,7 +174,7 @@ export class McpProxy {
 
   private buildEndpoint(): Server {
     const endpoint = new Server(
-      { name: "acp-runner", version: "0.1.0" },
+      { name: "acp-runner", version: RUNNER_VERSION },
       { capabilities: { tools: { listChanged: true } } },
     );
     endpoint.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.listTools() }));

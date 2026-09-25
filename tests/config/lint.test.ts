@@ -50,7 +50,7 @@ steps:
   - id: inline
     do: "Fix {{feedback}}"
   - id: file
-    file: prompt.md
+    do: { file: prompt.md }
   - id: shell
     run: "echo \${{ feedback }}"
   - id: argv
@@ -72,7 +72,7 @@ steps:
 });
 
 test("lint: a missing prompt file fails without running the agent", () => {
-  withFiles({ "bad.yaml": "steps:\n  - id: harden\n    file: absent.md\n" }, (dir) => {
+  withFiles({ "bad.yaml": "steps:\n  - id: harden\n    do: { file: absent.md }\n" }, (dir) => {
     const result = runLint([join(dir, "bad.yaml")]);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /step harden: cannot read absent\.md/);

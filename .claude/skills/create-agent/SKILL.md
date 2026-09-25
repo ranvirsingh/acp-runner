@@ -117,7 +117,7 @@ Use this explicit decision matrix when authoring or reviewing runbooks:
 | :--- | :--- |
 | **When to split turns** | • **Split:** When the role or task kind changes (e.g. implement $\rightarrow$ review).<br>• **Split:** When the model or provider changes (e.g. fast model $\rightarrow$ reasoning model).<br>• **Split:** When MCP toolsets change (e.g. readonly $\rightarrow$ write access).<br>• **Do NOT split:** Fine-grained sub-steps (e.g. creating 3 different files) — keep these in one turn. |
 | **Prompt externalization** | • **Inline `do:`:** 1–5 line concise instructions.<br>• **External `prompts/<id>.md`:** Any prompt $>5$ lines, containing schemas, long instructions, or code snippets. |
-| **Every step states its own work** | Every model step needs `do:`, `prompt:`, `file:` or `promptRef:`. There is no CLI goal to inherit — a step with no body and no `run:` is rejected when the runbook loads. |
+| **Every step states its own work** | Every model step needs `do:` or `promptRef:`. There is no CLI goal to inherit — a step with no body and no `run:` is rejected when the runbook loads. |
 | **Context loss across swaps** | • Changing `provider` or `model` triggers a session swap that **wipes vendor session history**. Changing `servers:` does **not** — the runner proxy re-scopes in place.<br>• Prompts following a swap must be **self-contained** and explicitly reference files on disk (`--cwd`). |
 
 ---
@@ -176,8 +176,8 @@ steps:
 ```
 
 ### C. Pure Script Turns vs. Model Turns
-- **Pure Script Turn:** Contains **only** `run:` (no `do` or `file`). Runs 0 model tokens. The shell command's exit code determines `on.success` vs `on.failure`. Ideal for setup, compilation, running tests, or teardown.
-- **Model Turn:** Contains `do` or `file`. Dispatches a prompt to the active ACP provider.
+- **Pure Script Turn:** Contains **only** `run:` (no `do`). Runs 0 model tokens. The shell command's exit code determines `on.success` vs `on.failure`. Ideal for setup, compilation, running tests, or teardown.
+- **Model Turn:** Contains `do`. Dispatches a prompt to the active ACP provider.
 - **Model + Command Turn:** If a turn has a prompt **and** `run:`, the model turn executes first, then the host command runs, and the command's exit code determines the transition.
 
 ### D. Terminal Targets (`END` and `FAIL`)
@@ -191,7 +191,7 @@ steps:
 - **Cost of a swap:** The runner terminates the child process and spawns a fresh ACP session. **All vendor session history and in-memory context are permanently lost.**
 - **Context preservation across swaps:** Files written to disk (`--cwd`) carry the work. The runner also preserves any undelivered failure report for the next model turn.
 - **Writing prompts after swaps:** If a step follows a swap, do not assume conversational continuity. Write the prompt so it explicitly references files or state on disk.
-- **Failure delivery:** The runner automatically sends pending failures as a second ACP text block for `do`, `file` and `promptRef`. Successful helper scripts preserve an undelivered failure; a successful rerun of the failed check clears it. Do not include the removed feedback placeholder.
+- **Failure delivery:** The runner automatically sends pending failures as a second ACP text block for `do` and `promptRef`. Successful helper scripts preserve an undelivered failure; a successful rerun of the failed check clears it. Do not include the removed feedback placeholder.
 
 ---
 
@@ -231,7 +231,7 @@ steps:
         fallback: alert_failure
 
   - id: fix
-    file: prompts/fix.md
+    do: { file: prompts/fix.md }
     on:
       success: test_gate
 
@@ -340,13 +340,12 @@ Documentation detailing purpose, required env vars, MCP server configuration, ex
 | Field | Type | Description |
 | --- | --- | --- |
 | `id` | `string` | Unique step identifier (cannot be `end` or `fail`) |
-| `do` | `string` | Inline prompt text |
-| `file` | `string` | Path to external prompt file (relative to agent folder). Cannot combine with `do` |
+| `do` | `string` \| `{ file }` | Inline prompt text, or `{ file: path }` to read it from a file relative to the agent folder |
 | `run` | `string` | Shell command executed in the workspace (`--cwd`) |
 | `provider` | `string` | Turn-level provider override (triggers swap if changed) |
 | `model` | `string` | Turn-level model override (triggers swap if changed) |
 | `servers` | `string[]` \| `record` | Scoped MCP servers. Omitted = all; `[]` = none; a map adds per-server `allow` / `deny` tool patterns (`*` wildcard, deny wins). Never triggers a swap |
-| `promptRef` | `record` | Turn text from a server's prompt catalogue: `{ server, name, arguments }`. Exclusive with `do`, `file` and `run` |
+| `promptRef` | `record` | Turn text from a server's prompt catalogue: `{ server, name, arguments }`. Exclusive with `do` and `run` |
 | `vars` | `record` | Turn-level variable overrides |
 | `on.success` | `string` \| `object` | Target step id or `END` on success (exit 0) |
 | `on.failure` | `string` \| `object` | Target step id or `FAIL` on failure (non-zero exit). Supports `{ target, maxAttempts, fallback }` |
