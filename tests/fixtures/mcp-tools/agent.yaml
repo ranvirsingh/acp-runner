@@ -1,0 +1,39 @@
+name: mcp-tools
+description: Every way a runbook reaches an MCP server - tools, scoping, a prompt and a resource
+provider: claude
+providers:
+  mcpServers:
+    greet:
+      command: node
+      args: ["tools/greet.mjs"]
+vars:
+  house_style: { resource: "mem://house-style", server: greet }
+steps:
+  - id: greet
+    servers:
+      greet: { allow: ["greet"] }
+    do: |
+      House style: {{house_style}}
+      Call the greet tool with your own name and report exactly what it returned.
+  - id: greet_quietly
+    servers:
+      greet: { deny: ["shout"] }
+    do: |
+      The shout tool is denied for this turn. Say in one line which greet tools
+      you can see now, then call the one that is allowed with the name Sam.
+  - id: critique
+    servers:
+      greet: { allow: ["greet"] }
+    promptRef:
+      server: greet
+      name: critique
+      arguments:
+        subject: greeting
+  - id: recap
+    servers: []
+    do: |
+      This turn runs on the same body as the last one, so you still remember it.
+      Say in one line whether a tool named mcp__runner__greet__greet is available
+      to you now.
+    on:
+      success: END

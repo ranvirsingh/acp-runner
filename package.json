@@ -1,0 +1,73 @@
+{
+  "name": "acp-runner",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local runner for multi-step agent runbooks (agent.yaml) over the Agent Client Protocol",
+  "license": "MIT",
+  "author": "Ranvir Singh",
+  "keywords": [
+    "acp",
+    "agent-client-protocol",
+    "agent",
+    "runbook",
+    "agent.yaml",
+    "mcp",
+    "cli"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "acp-runner": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "examples/hello-world",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "start:node": "tsx src/cli.ts",
+    "test": "bun test tests",
+    "test:node": "node --import tsx --test tests/*.test.ts tests/*/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "bun src/cli.ts lint examples/hello-world",
+    "lint:node": "tsx src/cli.ts lint examples/hello-world",
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "compile": "mkdir -p dist-bun && bun build src/cli.ts --compile --outfile dist-bun/acp-runner --no-compile-autoload-dotenv --no-compile-autoload-bunfig && bun scripts/sign.ts dist-bun/acp-runner && bun scripts/checksum.ts dist-bun/acp-runner",
+    "compile:linux-arm64": "mkdir -p dist-bun && bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile dist-bun/acp-runner-linux-arm64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig && bun scripts/checksum.ts dist-bun/acp-runner-linux-arm64",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": ">=20",
+    "bun": ">=1.4.0"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "yaml": "2.9.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.0",
+    "tsup": "8.5.1",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ranvirsingh/acp-runner.git"
+  },
+  "homepage": "https://github.com/ranvirsingh/acp-runner#readme",
+  "bugs": {
+    "url": "https://github.com/ranvirsingh/acp-runner/issues"
+  }
+}

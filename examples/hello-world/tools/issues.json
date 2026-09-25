@@ -1,0 +1,42 @@
+[
+  {
+    "id": "TASK-101",
+    "release": "1.2.0",
+    "status": "shipped",
+    "kind": "feature",
+    "title": "Filter boards by assignee",
+    "details": "Choose an assignee to focus a board on their tasks. The filter is saved per browser, not shared with teammates."
+  },
+  {
+    "id": "TASK-102",
+    "release": "1.2.0",
+    "status": "shipped",
+    "kind": "fix",
+    "title": "Keep task order after reconnecting",
+    "details": "Reconnecting after a brief network outage no longer resets manually sorted tasks."
+  },
+  {
+    "id": "TASK-103",
+    "release": "1.2.0",
+    "status": "shipped",
+    "kind": "upgrade",
+    "title": "Rename the export status column",
+    "details": "CSV exports now use status instead of state as the column header. Update scripts that read the state column before importing new exports."
+  },
+  {
+    "id": "TASK-104",
+    "release": "1.2.0",
+    "status": "open",
+    "kind": "feature",
+    "title": "Schedule recurring tasks",
+    "details": "Still in development; not available in this release."
+  },
+  {
+    "id": "TASK-099",
+    "release": "1.1.0",
+    "status": "shipped",
+    "kind": "feature",
+    "title": "Archive completed boards",
+    "details": "Move completed boards out of the active board list. No migration is required."
+  }
+]

@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:node
+      - run: npm run build
+      - run: npm pack --dry-run
+
+  bun:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test tests
+      - run: bun run build
+      - run: bun run compile
+      - name: smoke compiled executable
+        run: |
+          test "$(dist-bun/acp-runner --version)" = "0.1.0"
+          set +e
+          out=$(dist-bun/acp-runner --help 2>&1)
+          code=$?
+          set -e
+          test "$code" -eq 1
+          echo "$out" | grep -q "usage: acp-runner"
+          test -s dist-bun/acp-runner.sha256

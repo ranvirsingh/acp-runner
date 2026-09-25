@@ -1,0 +1,70 @@
+name: hello-world
+description: Compose a Claude writer, Codex reviewer and shell gates into a release-notes workflow
+providers:
+  agentHarness:
+    writer:
+      command: npx
+      args: ["-y", "@agentclientprotocol/claude-agent-acp"]
+      model: claude-sonnet-5
+    reviewer:
+      command: npx
+      args: ["-y", "@agentclientprotocol/codex-acp@1.13.1"]
+      model: gpt-6-luna
+  onSpawnError: fail
+  mcpServers:
+    release:
+      command: node
+      args: [tools/release.mjs]
+vars:
+  product: Taskboard
+steps:
+  - id: check-inputs
+    servers: []
+    run:
+      command: sh
+      args: [scripts/check-inputs.sh]
+    on:
+      failure: FAIL
+  - id: collect
+    provider: writer
+    vars:
+      release: { file: release.txt }
+    servers:
+      release: { allow: [list_issues] }
+    do: |
+      Prepare release notes for {{product}} version {{release}}.
+      Call the release server's list_issues tool with the trimmed release version.
+      Save only issues whose status is shipped to issues.json in the working
+      directory, as a JSON array preserving every field from the tool response.
+      This file is the hand-off to the drafting step. Do not invent issues or
+      read the server's source/data instead of calling MCP. If repairing a failed
+      check, fetch the issues again and replace the file.
+      Do not edit input files, helper scripts, MCP data, prompts or runbooks.
+  - id: draft
+    provider: writer
+    servers: []
+    file: templates/draft.md
+    vars:
+      release: { file: release.txt }
+      release_style: { resource: "mem://release-style", server: release }
+  - id: review
+    provider: reviewer
+    vars:
+      release: { file: release.txt }
+    servers: []
+    promptRef:
+      server: release
+      name: review_release
+      arguments:
+        release: "{{release}}"
+  - id: verify
+    servers: []
+    run:
+      command: sh
+      args: [scripts/check.sh]
+    on:
+      success: END
+      failure:
+        target: collect
+        maxAttempts: 2
+        fallback: FAIL
