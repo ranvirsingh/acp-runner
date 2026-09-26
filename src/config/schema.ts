@@ -90,6 +90,7 @@ const stepCommand = z.union([
     .object({
       command: z.string().min(1),
       args: z.array(z.string()).optional(),
+      timeout: z.number().int().positive().optional(),
     })
     .strict(),
 ]);
@@ -104,6 +105,7 @@ const step = z
     servers: stepServers.optional(),
     vars: vars.optional(),
     run: stepCommand.optional(),
+    timeout: z.number().int().positive().optional(),
     retry: stepRetry.optional(),
     on: z
       .object({

@@ -328,3 +328,27 @@ test("runAgent: abort still ends the run when the agent ignores cancel", async (
     delete process.env.ACP_FIXTURE_MODE;
   }
 });
+
+test("runStepCheck: respects step-level and env timeout", () => {
+  const config = configFor({ steps: [] });
+  const slowCommand = "node -e 'setTimeout(() => {}, 500)'";
+
+  // Step run timeout overrides default
+  const result1 = runStepCheck(config, {
+    id: "check",
+    run: { command: slowCommand, timeout: 50 },
+  });
+  assert.equal(result1.outcome, "failure");
+
+  // ACP_RUNNER_STEP_TIMEOUT env overrides default
+  process.env.ACP_RUNNER_STEP_TIMEOUT = "50";
+  try {
+    const result2 = runStepCheck(config, {
+      id: "check",
+      run: slowCommand,
+    });
+    assert.equal(result2.outcome, "failure");
+  } finally {
+    delete process.env.ACP_RUNNER_STEP_TIMEOUT;
+  }
+});

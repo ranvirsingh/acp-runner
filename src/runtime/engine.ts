@@ -49,13 +49,21 @@ export function runStepCheck(
   step?: AgentStep,
   extraVars?: Record<string, unknown>,
   signal?: AbortSignal,
-  timeout = 60000,
+  timeout?: number,
 ): CommandResult {
   const rawCommand = step?.run;
   if (!rawCommand || !step) return { outcome: "success", output: "", exitCode: null };
   if (signal?.aborted) {
     return { outcome: "failure", output: "aborted", exitCode: null };
   }
+  const defaultTimeout = process.env.ACP_RUNNER_STEP_TIMEOUT
+    ? Number(process.env.ACP_RUNNER_STEP_TIMEOUT)
+    : 300000;
+  const commandTimeout =
+    typeof rawCommand === "object" && rawCommand !== null && "timeout" in rawCommand && typeof (rawCommand as any).timeout === "number"
+      ? (rawCommand as any).timeout
+      : step?.timeout;
+  const effectiveTimeout = timeout ?? commandTimeout ?? defaultTimeout;
   const cwd = config.cwd;
   mkdirSync(cwd, { recursive: true });
   const workingDir = existsSync(cwd) ? cwd : process.cwd();
@@ -81,7 +89,7 @@ export function runStepCheck(
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, ...stepVars, RUNBOOK_DIR: baseDir },
         signal,
-        timeout,
+        timeout: effectiveTimeout,
       });
     } else {
       const renderedCommand = renderPromptTemplate(rawCommand, stepVars);
@@ -110,7 +118,7 @@ export function runStepCheck(
           PATH: `${baseDir}:${process.env.PATH ?? ""}`,
         },
         signal,
-        timeout,
+        timeout: effectiveTimeout,
       });
     }
 

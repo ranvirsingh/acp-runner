@@ -30,7 +30,7 @@ export interface PromptRef {
 
 export type StepServers = string[] | Record<string, ToolScope>;
 
-export type StepCommand = string | { command: string; args?: string[] };
+export type StepCommand = string | { command: string; args?: string[]; timeout?: number };
 
 export interface AgentStep {
   id: string;
@@ -41,6 +41,7 @@ export interface AgentStep {
   servers?: StepServers;
   vars?: Record<string, unknown>;
   run?: StepCommand;
+  timeout?: number;
   retry?: StepRetry;
   on?: {
     success?: StepTransition;
