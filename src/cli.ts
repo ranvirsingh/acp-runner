@@ -16,13 +16,15 @@ import { runAgent } from "./index.js";
 import { lintCommand } from "./config/lint.js";
 import { planCommand } from "./config/plan.js";
 import { checkCommand } from "./runtime/check.js";
+import { installSkill } from "./skill.js";
 import { RUNNER_VERSION } from "./version.js";
 
 const USAGE =
   "usage: acp-runner run [agent.yaml|folder] [--cwd <dir>] [--trace off|file|stdout|both] [--confirm]\n" +
   "       acp-runner lint [agent.yaml|folder ...]\n" +
   "       acp-runner plan [agent.yaml|folder]\n" +
-  "       acp-runner check [agent.yaml|folder]";
+  "       acp-runner check [agent.yaml|folder]\n" +
+  "       acp-runner skill install";
 
 export interface ParsedArgs {
   yamlPath: string;
@@ -124,6 +126,11 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   }
   if (command === "check") {
     process.exitCode = await checkCommand(rest[0] ?? "agent.yaml");
+    return;
+  }
+  if (command === "skill") {
+    if (rest[0] !== "install") throw new Error(USAGE);
+    console.log(`installed create-acp-agent to ${installSkill()}`);
     return;
   }
   if (command === undefined || command === "--help" || command === "-h") throw new Error(USAGE);

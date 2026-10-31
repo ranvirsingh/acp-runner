@@ -180,8 +180,8 @@ test("lint: accepts runbooks with pure script steps", () => {
   );
 });
 
-test("lint: the agent.yaml template shipped with the create-agent skill is valid", () => {
-  const result = runLint([".claude/skills/create-agent/assets/agent.yaml"]);
+test("lint: the agent.yaml template shipped with the create-acp-agent skill is valid", () => {
+  const result = runLint([".claude/skills/create-acp-agent/assets/agent.yaml"]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 

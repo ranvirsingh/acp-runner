@@ -7,7 +7,7 @@ providers:
     model: claude-sonnet-5
 
 vars:
-  standard: every exported function has a test and passes verification
+  STANDARD: every exported function has a test and passes verification
 
 steps:
   - id: implement
@@ -19,7 +19,7 @@ steps:
   - id: review
     provider: claude
     do: |
-      Review the work against this standard: {{standard}}.
+      Review the work against this standard: {{STANDARD}}.
       Fix what fails it. Change nothing else.
 
   - id: verify
@@ -32,7 +32,7 @@ steps:
         fallback: alert_failure
 
   - id: alert_failure
-    run: echo "Verification failed after max retry attempts"
+    run: echo "The tests still fail after the last attempt."
     on:
       success: FAIL
 
