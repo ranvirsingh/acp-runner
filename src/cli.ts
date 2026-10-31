@@ -5,13 +5,11 @@ import { createInterface } from "node:readline/promises";
 import {
   isTraceMode,
   tracesToStdout,
-  type ProviderId,
   type RunnerConfig,
   type TraceMode,
 } from "./types.js";
-import { providerSpec } from "./runtime/providers.js";
 import { pickAllowOption, pickRejectOption } from "./runtime/session.js";
-import { loadAgentYaml, resolveModel, resolveProvider, resolveRunbookPath } from "./config/yaml.js";
+import { loadAgentYaml, resolveRunbookPath } from "./config/yaml.js";
 import { stateLog, stepLog } from "./output/logs.js";
 import { RunRecorder } from "./output/record.js";
 import { runAgent } from "./index.js";
@@ -19,13 +17,12 @@ import { lintCommand } from "./config/lint.js";
 import { RUNNER_VERSION } from "./version.js";
 
 const USAGE =
-  "usage: acp-runner [agent.yaml|folder] [--cwd <dir>] [--provider claude|codex|gemini] [--trace off|file|stdout|both] [--confirm]\n" +
+  "usage: acp-runner [agent.yaml|folder] [--cwd <dir>] [--trace off|file|stdout|both] [--confirm]\n" +
   "       acp-runner lint [agent.yaml|folder ...]";
 
 export interface ParsedArgs {
   yamlPath: string;
   cwd: string;
-  provider?: ProviderId;
   trace: TraceMode;
   confirm?: boolean;
 }
@@ -51,7 +48,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
-    if (token === "--cwd" || token === "--provider" || token === "--trace") {
+    if (token === "--cwd" || token === "--trace") {
       const value = argv[i + 1];
       if (!value) throw new Error(`${token} requires a value`);
       flags.set(token, value);
@@ -81,8 +78,6 @@ export function parseArgs(argv: string[]): ParsedArgs {
     throw new Error(`unexpected argument "${rest[0]}"\n${USAGE}`);
   }
 
-  const provider: ProviderId | undefined = flags.get("--provider");
-
   const traceFlag = flags.get("--trace") ?? "stdout";
   if (!isTraceMode(traceFlag)) {
     throw new Error(`--trace must be off, file, stdout, or both (got ${traceFlag})`);
@@ -91,7 +86,6 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return {
     yamlPath,
     cwd: resolve(flags.get("--cwd") ?? process.cwd()),
-    provider,
     trace: traceFlag,
     ...(flags.has("--confirm") ? { confirm: true } : {}),
   };
@@ -103,7 +97,6 @@ export function loadConfig(args: ParsedArgs): RunnerConfig {
   return {
     yamlPath,
     cwd: args.cwd,
-    providerOverride: args.provider,
     runbook: loadAgentYaml(yamlPath),
     trace: args.trace,
     confirm: args.confirm,
@@ -122,16 +115,8 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   }
   const args = parseArgs(argv);
   const config = loadConfig(args);
-  const first = config.runbook.steps[0];
-  const provider = resolveProvider(config, first);
-  providerSpec(provider, config.runbook.providers?.agentHarness, { cwd: config.cwd });
-  const model = resolveModel(config, first);
-
   if (!tracesToStdout(config.trace)) {
-    console.log(
-      `[runner] ${config.runbook.name ?? "agent"} provider=${provider}` +
-        `${model ? ` model=${model}` : ""} cwd=${config.cwd}`,
-    );
+    console.log(`[runner] ${config.runbook.name ?? "agent"} cwd=${config.cwd}`);
   }
 
   const recorder = new RunRecorder(config);
@@ -168,7 +153,8 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
         if (!tracesToStdout(config.trace)) {
           if (context.stepIndex !== loggedStep) {
             loggedStep = context.stepIndex;
-            stepLog(config.runbook.steps[context.stepIndex]?.id ?? "?", context.provider);
+            const step = config.runbook.steps[context.stepIndex];
+            stepLog(step?.id ?? "?", step?.provider);
           }
           stateLog(previous, current);
         }

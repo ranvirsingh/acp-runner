@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse } from "yaml";
-import { defaultProvider, resolveAdapterConfig } from "../runtime/providers.js";
 import { validateAgentYaml } from "./schema.js";
 import {
   isScriptStep,
@@ -30,45 +29,27 @@ export function loadAgentYaml(path: string): AgentYaml {
 
 export function stepBody(step: AgentStep, baseDir: string): string | undefined {
   if (step.do == null) return undefined;
-  if (typeof step.do === "object") {
-    try {
-      return readFileSync(resolve(baseDir, step.do.file), "utf8");
-    } catch {
-      throw new Error(`step ${step.id}: cannot read ${step.do.file}`);
-    }
+  if (typeof step.do === "string") return step.do.trim().length === 0 ? undefined : step.do;
+  try {
+    return readFileSync(resolve(baseDir, step.do.file), "utf8");
+  } catch {
+    throw new Error(`step ${step.id}: cannot read ${step.do.file}`);
   }
-  return step.do.trim().length === 0 ? undefined : step.do;
-}
-
-export function resolveProvider(
-  config: RunnerConfig,
-  step?: AgentStep,
-): ProviderId {
-  if (step?.provider) return step.provider;
-  if (config.providerOverride) return config.providerOverride;
-  return config.runbook.provider ?? defaultProvider();
 }
 
 export function resolveModel(config: RunnerConfig, step?: AgentStep): string | undefined {
-  const harnesses = resolveAdapterConfig({
-    cwd: config.cwd,
-    runbookDeclared: config.runbook.providers?.agentHarness,
-  });
-  return step?.model ?? harnesses[resolveProvider(config, step)]?.model ?? config.runbook.model;
+  return step?.provider ? config.runbook.providers?.[step.provider]?.model : undefined;
 }
 
 export function resolveStepPrompt(
   config: RunnerConfig,
   step: AgentStep,
   extraVars?: Record<string, unknown>,
-  options?: { stubMissingVars?: boolean; body?: string },
+  options?: { stubMissingVars?: boolean },
 ): string {
-  if (options?.body !== undefined) {
-    return options.body;
-  }
   const body = stepBody(step, dirname(config.yamlPath));
   if (!body) {
-    if (isScriptStep(step) || step.promptRef) return "";
+    if (isScriptStep(step)) return "";
     throw new Error(`step ${step.id}: no prompt body`);
   }
   try {
@@ -111,7 +92,7 @@ function resolveInFolder(value: string, baseDir: string): string {
 }
 
 export function resolveMcpServers(config: RunnerConfig, stubMissing = false): ResolvedMcpServer[] {
-  const declared = config.runbook.providers?.mcpServers;
+  const declared = config.runbook.mcpServers;
   if (!declared) return [];
   const baseDir = dirname(config.yamlPath);
   const variables = normalizeVariables(baseDir, config.runbook.vars, undefined, stubMissing);
@@ -148,8 +129,8 @@ export function resolveMcpServers(config: RunnerConfig, stubMissing = false): Re
 }
 
 export function resolveStepScope(config: RunnerConfig, step: AgentStep): StepScope {
-  const declared = Object.keys(config.runbook.providers?.mcpServers ?? {});
-  return normalizeScope(step.servers, declared);
+  const declared = Object.keys(config.runbook.mcpServers ?? {});
+  return normalizeScope(step.mcpServers, declared);
 }
 
 export function resolveStepServers(config: RunnerConfig, step: AgentStep): ResolvedMcpServer[] {
@@ -159,11 +140,8 @@ export function resolveStepServers(config: RunnerConfig, step: AgentStep): Resol
 }
 
 export function needsNewBody(
-  current: { provider: ProviderId; model?: string },
-  next: { provider: ProviderId; model?: string },
+  current: { provider?: ProviderId },
+  next: { provider?: ProviderId },
 ): boolean {
-  if (current.provider !== next.provider) return true;
-  if (next.model && current.model && next.model !== current.model) return true;
-  if (next.model && !current.model) return true;
-  return false;
+  return current.provider !== next.provider;
 }

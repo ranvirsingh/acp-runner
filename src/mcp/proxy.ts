@@ -21,13 +21,6 @@ export const RESOURCE_LIMIT_BYTES = 256 * 1024;
 
 const RUNNER_ENTRY_NAME = "runner";
 
-function textOf(content: unknown): string | null {
-  if (!content || typeof content !== "object") return null;
-  const record = content as { type?: unknown; text?: unknown };
-  if (record.type !== "text" || typeof record.text !== "string") return null;
-  return record.text;
-}
-
 export class McpProxy {
   private readonly declared = new Map<string, ResolvedMcpServer>();
   private readonly clients = new Map<string, Client>();
@@ -152,24 +145,6 @@ export class McpProxy {
       throw new Error(`resource ${uri} on ${server} is over 256 KiB`);
     }
     return text;
-  }
-
-  async getPrompt(
-    server: string,
-    name: string,
-    args?: Record<string, string>,
-  ): Promise<string> {
-    const client = await this.ensureClient(server);
-    const result = await client.getPrompt({ name, ...(args ? { arguments: args } : {}) });
-    const parts: string[] = [];
-    for (const message of result.messages ?? []) {
-      const text = textOf(message.content);
-      if (text === null) {
-        throw new Error(`prompt ${name} on ${server} returned non-text content`);
-      }
-      parts.push(text);
-    }
-    return parts.join("\n\n");
   }
 
   private buildEndpoint(): Server {

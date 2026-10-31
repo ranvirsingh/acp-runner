@@ -23,13 +23,10 @@ test("dist exports: dist/index.js exports public framework API", async () => {
   assert.equal(typeof dist.createAgentActor, "function");
   assert.ok(dist.AcpSession);
   assert.equal(typeof dist.providerSpec, "function");
-  assert.equal(typeof dist.knownProviderIds, "function");
-  assert.ok(dist.BUILTIN_PROVIDERS.claude);
   assert.ok(dist.agentYamlSchema);
   assert.equal(typeof dist.loadAgentYaml, "function");
   assert.equal(typeof dist.validateAgentYaml, "function");
   assert.equal(typeof dist.resolveRunbookPath, "function");
-  assert.equal(typeof dist.resolveProvider, "function");
   assert.equal(typeof dist.resolveModel, "function");
   assert.equal(typeof dist.resolveStepPrompt, "function");
   assert.equal(typeof dist.resolveStepCommand, "function");

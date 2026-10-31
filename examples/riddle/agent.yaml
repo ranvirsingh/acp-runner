@@ -1,0 +1,32 @@
+name: riddle
+description: Claude writes a riddle, Codex solves it
+providers:
+  claude:
+    command: npx
+    args: ["-y", "@agentclientprotocol/claude-agent-acp"]
+    model: claude-sonnet-5
+  codex:
+    command: npx
+    args: ["-y", "@agentclientprotocol/codex-acp@2.5.0"]
+    model: gpt-6-luna
+vars:
+  RIDDLE_THEME: the ocean
+  RIDDLE_FILE: riddle.md
+  ANSWER_FILE: answer.md
+steps:
+  - id: ask
+    provider: claude
+    do: |
+      Write one short, original riddle about {{RIDDLE_THEME}} to {{RIDDLE_FILE}}
+      in the working directory. It must have exactly one fair answer.
+      Write only the riddle text. Do not write the answer or any hint that
+      names it, in that file or anywhere else.
+    run: test -s "{{RIDDLE_FILE}}"
+  - id: solve
+    provider: codex
+    do: |
+      Read {{RIDDLE_FILE}} in the working directory and solve the riddle.
+      Write {{ANSWER_FILE}} with the answer on the first line, as
+      "Answer: <your answer>", then one sentence explaining the reasoning.
+      Do not change {{RIDDLE_FILE}}.
+    run: "grep -q '^Answer: ' {{ANSWER_FILE}}"

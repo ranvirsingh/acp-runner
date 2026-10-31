@@ -89,16 +89,16 @@ function config(options: {
     yamlPath: join(options.cwd, "agent.yaml"),
     cwd: options.cwd,
     trace: "stdout" as const,
-    providerOverride: options.provider,
     runbook: {
       name: "fixture",
-      provider: options.provider,
-      ...(options.model ? { model: options.model } : {}),
-      providers: {
-        ...options.providers,
-        onSpawnError: "fail",
+      providers: options.providers ?? {
+        [options.provider]: {
+          command: options.provider === "gemini" ? "gemini" : "npx",
+          args: options.provider === "gemini" ? ["--acp"] : ["-y", `@agentclientprotocol/${options.provider}-acp`],
+          model: options.model ?? "test-model",
+        },
       },
-      steps: [{ id: "implement", do: "say hello" }],
+      steps: [{ id: "implement", provider: options.provider, do: "say hello" }],
     },
   };
 }
@@ -167,6 +167,33 @@ test("acp fixture: split stderr lines and a trailing line without a newline are 
     assert.equal(result.outcome, "finished");
     assert.ok(lines.some((line) => line.includes("[claude] stderr HELLO")));
     assert.ok(lines.some((line) => line.includes("[claude] stderr WORLD")));
+  } finally {
+    console.log = original;
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(bins, { recursive: true, force: true });
+    delete process.env.ACP_FIXTURE_MODE;
+  }
+});
+
+test("acp fixture: stderr a harness prints while it is being closed is not logged", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "acp-close-err-"));
+  const bins = fixtureBinDir();
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => {
+    lines.push(args.join(" "));
+  };
+  try {
+    const result = await withPath(bins, () =>
+      runAgent({
+        config: {
+          ...config({ provider: "claude", cwd: workspace, mode: "stderr-on-close" }),
+          trace: "off" as const,
+        },
+      }),
+    );
+    assert.equal(result.outcome, "finished");
+    assert.ok(!lines.some((line) => line.includes("SHUTDOWN NOISE")));
   } finally {
     console.log = original;
     rmSync(workspace, { recursive: true, force: true });
@@ -274,12 +301,13 @@ test("acp fixture: permission requests are auto-approved and the turn completes"
   }
 });
 
-test("acp fixture: authenticate runs when the agent offers a method", async () => {
+test("acp fixture: an agent that needs a login fails the run and names its login methods", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "acp-auth-"));
   const bins = fixtureBinDir();
   try {
     const result = await runFixture(bins, { provider: "claude", cwd: workspace, mode: "auth" });
-    assert.equal(result.outcome, "finished");
+    assert.equal(result.outcome, "failed");
+    assert.match(result.lastError ?? "", /claude needs a login \(gemini-api-key\)/);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
     rmSync(bins, { recursive: true, force: true });
@@ -318,7 +346,7 @@ test("acp fixture: a declared provider pins its model in the command line", asyn
       provider: "gemini-pro",
       cwd: workspace,
       argvFile,
-      providers: { agentHarness: { "gemini-pro": { command: "gemini", args: ["--model", "gemini-3.7-pro", "--acp"] } } },
+      providers: { "gemini-pro": { command: "gemini", args: ["--model", "gemini-3.7-pro", "--acp"], model: "test-model" } },
     });
     assert.equal(result.outcome, "finished");
     const argv = readFileSync(argvFile, "utf8").trim().split("\n");

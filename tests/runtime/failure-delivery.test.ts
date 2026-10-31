@@ -17,11 +17,18 @@ function project(runbook: AgentYaml, mode = "ok") {
   const provider = {
     command: process.execPath,
     args: [...(process.versions.bun ? [] : ["--import", "tsx"]), fixture, `--mode=${mode}`, `--capture=${capture}`],
+    model: "test-model",
   };
   const config: RunnerConfig = {
     cwd: dir,
     yamlPath: join(dir, "agent.yaml"),
-    runbook: { ...runbook, providers: { ...runbook.providers, agentHarness: { claude: provider, codex: provider, ...runbook.providers?.agentHarness } } },
+    runbook: {
+      ...runbook,
+      providers: { claude: provider, codex: provider, ...runbook.providers },
+      steps: runbook.steps.map((step) =>
+        step.provider || (step.do === undefined && !step.do) ? step : { ...step, provider: "claude" },
+      ),
+    },
   };
   return {
     dir, config,
@@ -150,64 +157,13 @@ test("a newer workflow failure replaces the older undelivered failure", async ()
   } finally { p.close(); }
 });
 
-for (const mode of ["crash-on-start", "exit-during-prompt", "reject-prompt"]) {
-  test(`fallback preserves the original check failure after ${mode}`, async () => {
-    const p = project({
-      providers: { fallback: ["claude", "codex"] },
-      steps: [
-        { id: "verify", run: "echo original-error >&2; exit 5", on: { failure: "fix" } },
-        { id: "fix", do: "Repair." },
-        { id: "next", do: "Summarize." },
-      ],
-    });
-    const harness = p.config.runbook.providers!.agentHarness!;
-    harness.claude = { ...harness.claude, args: harness.claude.args!.map((arg) => arg === "--mode=ok" ? `--mode=${mode}` : arg) };
-    try {
-      const result = await runAgent({ config: p.config });
-      assert.equal(result.outcome, "finished");
-      assert.equal(result.context.provider, "codex");
-      const turns = p.prompts();
-      const recovery = turns.at(-2)!;
-      assert.equal(recovery.prompt.length, 2);
-      assert.match(JSON.stringify(recovery.prompt[1]), /Step: verify/);
-      assert.match(JSON.stringify(recovery.prompt[1]), /original-error/);
-      assert.equal(turns.at(-1)!.prompt.length, 1);
-    } finally { p.close(); }
-  });
-}
-
 const catalogue = fileURLToPath(new URL("../fixtures/mcp-catalogue.mjs", import.meta.url));
-
-test("promptRef recovery receives shell failures and preserves literal external prompt text", async () => {
-  const p = project({
-    providers: { mcpServers: { cat: { command: process.execPath, args: [catalogue] } } },
-    vars: { subject: "{{feedback}}" },
-    steps: [
-      { id: "decide", promptRef: { server: "cat", name: "review", arguments: { service: "{{subject}}" } } },
-      { id: "check", run: { command: process.execPath, args: ["check.cjs"] }, on: { failure: { target: "decide", maxAttempts: 1, fallback: "FAIL" } } },
-    ],
-  });
-  writeFileSync(join(p.dir, "check.cjs"), "const fs = require('node:fs'); if (!fs.existsSync('tried')) { fs.writeFileSync('tried', 'yes'); console.log('evidence'); console.error('check rejected'); process.exit(6); }");
-  try {
-    assert.equal((await runAgent({ config: p.config })).outcome, "finished");
-    const turns = p.prompts();
-    assert.equal(turns.length, 2);
-    assert.deepEqual(turns[0].prompt, [{ type: "text", text: "review {{feedback}}\n\nbe brief" }]);
-    assert.deepEqual(turns[1].prompt[0], turns[0].prompt[0]);
-    assert.equal(turns[1].prompt.length, 2);
-    const report = JSON.stringify(turns[1].prompt[1]);
-    assert.match(report, /Kind: check/);
-    assert.match(report, /Exit code: 6/);
-    assert.match(report, /stdout:/);
-    assert.match(report, /stderr:/);
-  } finally { p.close(); }
-});
 
 test("input preparation failures are delivered to the recovery step", async () => {
   const p = project({
-    providers: { mcpServers: { cat: { command: process.execPath, args: [catalogue] } } },
+    mcpServers: { cat: { command: process.execPath, args: [catalogue] } },
     steps: [
-      { id: "read", do: "Read {{data}}", vars: { data: { resource: "mem://missing", server: "cat" } }, on: { failure: "fix" } },
+      { id: "read", do: "Read {{data}}", vars: { data: { resource: "mem://missing", mcpServer: "cat" } }, on: { failure: "fix" } },
       { id: "fix", do: "Explain the missing input." },
     ],
   });

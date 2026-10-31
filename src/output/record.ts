@@ -19,7 +19,7 @@ import type {
 } from "../types.js";
 import { isScriptStep, tracesToFile, tracesToStdout } from "../types.js";
 import { toolNameFromUpdate } from "./logs.js";
-import { resolveModel, resolveProvider, resolveStepServers } from "../config/yaml.js";
+import { resolveModel, resolveStepServers } from "../config/yaml.js";
 
 export function createRunId(date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -56,7 +56,7 @@ export class RunRecorder {
   private activeStep: { stepId: string; attempt: number; startTime: number } | null = null;
   private toolNames = new Map<string, string>();
   private toolStartTimes = new Map<string, number>();
-  private lastProvider: ProviderId;
+  private lastProvider?: ProviderId;
   private lastModel?: string;
   private started = false;
   private ended = false;
@@ -66,7 +66,7 @@ export class RunRecorder {
     this.runId = runId;
     this.startTime = Date.now();
     const first = config.runbook.steps[0];
-    this.lastProvider = resolveProvider(config, first);
+    this.lastProvider = first.provider;
     this.lastModel = resolveModel(config, first);
 
     if (tracesToFile(config.trace)) {
@@ -108,7 +108,7 @@ export class RunRecorder {
       agent: this.config.runbook.name ?? null,
       cwd: this.config.cwd,
       yaml: this.config.yamlPath,
-      provider: resolveProvider(this.config, first),
+      provider: first.provider ?? null,
       model: resolveModel(this.config, first) ?? null,
       steps: this.config.runbook.steps.map((s) => s.id),
     };
@@ -190,7 +190,7 @@ export class RunRecorder {
           index: context.stepIndex,
           kind: isScriptStep(currentStep) ? "script" : "model",
           attempt,
-          provider: resolveProvider(this.config, currentStep),
+          provider: currentStep.provider ?? null,
           model: resolveModel(this.config, currentStep) ?? null,
           servers: resolveStepServers(this.config, currentStep).map((s) => s.name),
         };
@@ -221,18 +221,14 @@ export class RunRecorder {
 
     if (previous === "shuttingDown" && current === "spawning") {
       this.swapsCount += 1;
-      let reason: SwapReason = "provider";
-      if (context.lastError) reason = "spawn_error";
-      else if (context.provider !== this.lastProvider) reason = "provider";
-      else if (context.model !== this.lastModel) reason = "model";
-      else reason = "servers";
+      const reason: SwapReason = "provider";
 
       const swapEv: SwapEvent = {
         ts: new Date().toISOString(),
         run: this.runId,
         ev: "swap",
-        from_provider: this.lastProvider,
-        to_provider: context.provider,
+        from_provider: this.lastProvider ?? null,
+        to_provider: context.provider ?? null,
         from_model: this.lastModel ?? null,
         to_model: context.model ?? null,
         reason,

@@ -39,10 +39,10 @@ Before generating files, interrogate the user with the 6 core questions below. I
 2. **What are the turns and boundaries?**
    - A turn is a cohesive chunk of work handed to an agent in one go (e.g., implement, review, format).
    - *Split turns when:* The nature of the task changes, the provider/model changes, or the MCP toolset changes.
-   - *Do not split turns:* Purely for cosmetic neatness. Every extra model turn costs tokens, and changing provider/model/tools destroys vendor session history.
+   - *Do not split turns:* Purely for cosmetic neatness. Every extra model turn costs tokens, and changing the harness destroys vendor session history.
 3. **Who performs each turn (Provider & Model)?**
-   - Supported providers: `claude`, `codex`, `gemini`.
-   - Set sensible defaults at the top level (e.g. `claude` with `claude-sonnet-5`), with per-step overrides only when a turn requires a specialized model (e.g., fast model for drafting, deep reasoning for security review).
+   - Declare every harness under `providers:` with a name you choose, its `command`, `args` and a required `model`. Nothing is built in.
+   - Every model step names its harness with `provider:`. Declare a second harness for a second model (e.g. a fast drafter and a deep reviewer).
 4. **What tools, APIs, and access does the agent need?**
    - Identify external capabilities required (e.g., GitHub, Slack, BigQuery, Database, Jira, custom CLI scripts).
    - **Proactive Tool Scaffolding:** Offer to create custom stdio MCP servers in `agents/<name>/tools/` or configure standard MCP servers, and generate `.env.example` with required secret placeholders.
@@ -74,7 +74,7 @@ When designing an agent, the assistant must **audit the domain requirements and 
   └────────────────────────────┴─────────────────────────────┘
                                │
                                ▼
-  Scaffold: agents/<name>/tools/ + .env.example + agent.yaml providers.mcpServers
+  Scaffold: agents/<name>/tools/ + .env.example + agent.yaml mcpServers
 ```
 
 ### Proactive Tool Assistance Checklist
@@ -94,7 +94,7 @@ When designing an agent, the assistant must **audit the domain requirements and 
            JIRA_BASE_URL: "{{env.JIRA_BASE_URL}}"
    ```
 3. **Scaffold `.env.example`:** Always generate a template `.env.example` in the agent folder listing every required secret and variable with descriptive comments.
-4. **Scope Tools per Turn (`servers:`):** Apply least-privilege scoping so turns that only read files do not receive mutation-capable servers or tools. Use the map form (`servers: { db: { allow: ["select"] } }`) when a server carries both safe and destructive tools. Scoping is free — it never costs a swap.
+4. **Scope Tools per Turn (`mcpServers:`):** Apply least-privilege scoping so turns that only read files do not receive mutation-capable servers or tools. Use the map form (`mcpServers: { db: { allow: ["select"] } }`) when a server carries both safe and destructive tools. Scoping is free — it never costs a swap.
 
 ---
 
@@ -115,10 +115,10 @@ Use this explicit decision matrix when authoring or reviewing runbooks:
 
 | Decision | Guidelines & Best Practices |
 | :--- | :--- |
-| **When to split turns** | • **Split:** When the role or task kind changes (e.g. implement $\rightarrow$ review).<br>• **Split:** When the model or provider changes (e.g. fast model $\rightarrow$ reasoning model).<br>• **Split:** When MCP toolsets change (e.g. readonly $\rightarrow$ write access).<br>• **Do NOT split:** Fine-grained sub-steps (e.g. creating 3 different files) — keep these in one turn. |
+| **When to split turns** | • **Split:** When the role or task kind changes (e.g. implement $\rightarrow$ review).<br>• **Split:** When the harness changes (e.g. fast model $\rightarrow$ reasoning model).<br>• **Split:** When MCP toolsets change (e.g. readonly $\rightarrow$ write access).<br>• **Do NOT split:** Fine-grained sub-steps (e.g. creating 3 different files) — keep these in one turn. |
 | **Prompt externalization** | • **Inline `do:`:** 1–5 line concise instructions.<br>• **External `prompts/<id>.md`:** Any prompt $>5$ lines, containing schemas, long instructions, or code snippets. |
-| **Every step states its own work** | Every model step needs `do:` or `promptRef:`. There is no CLI goal to inherit — a step with no body and no `run:` is rejected when the runbook loads. |
-| **Context loss across swaps** | • Changing `provider` or `model` triggers a session swap that **wipes vendor session history**. Changing `servers:` does **not** — the runner proxy re-scopes in place.<br>• Prompts following a swap must be **self-contained** and explicitly reference files on disk (`--cwd`). |
+| **Every step states its own work** | Every model step needs `do:`. There is no CLI goal to inherit — a step with no body and no `run:` is rejected when the runbook loads. |
+| **Context loss across swaps** | • Changing `provider` triggers a session swap that **wipes vendor session history**. Changing `mcpServers:` does **not** — the runner proxy re-scopes in place.<br>• Prompts following a swap must be **self-contained** and explicitly reference files on disk (`--cwd`). |
 
 ---
 
@@ -187,11 +187,11 @@ steps:
 - Step IDs cannot be named `end` or `fail` (they are reserved).
 
 ### E. The Swap Economy & Session Context
-- **When swaps occur:** A turn with a different `provider` or a different `model` triggers an **ACP session swap**. A different `servers:` scope does not — the runner proxy narrows the visible tool set on the live session.
+- **When swaps occur:** A turn with a different `provider` triggers an **ACP session swap**. A script step keeps the live session. A different `mcpServers:` scope does not — the runner proxy narrows the visible tool set on the live session.
 - **Cost of a swap:** The runner terminates the child process and spawns a fresh ACP session. **All vendor session history and in-memory context are permanently lost.**
 - **Context preservation across swaps:** Files written to disk (`--cwd`) carry the work. The runner also preserves any undelivered failure report for the next model turn.
 - **Writing prompts after swaps:** If a step follows a swap, do not assume conversational continuity. Write the prompt so it explicitly references files or state on disk.
-- **Failure delivery:** The runner automatically sends pending failures as a second ACP text block for `do` and `promptRef`. Successful helper scripts preserve an undelivered failure; a successful rerun of the failed check clears it. Do not include the removed feedback placeholder.
+- **Failure delivery:** The runner automatically sends pending failures as a second ACP text block for every `do`. Successful helper scripts preserve an undelivered failure; a successful rerun of the failed check clears it. Do not include the removed feedback placeholder.
 
 ---
 
@@ -203,17 +203,17 @@ Every agent created must be scaffolded as a complete package inside `agents/<nam
 ```yaml
 name: code-repair
 description: "Iteratively fixes failing tests and syntax errors using test feedback"
-provider: claude
-model: claude-sonnet-5
 providers:
-  mcpServers:
-    custom-tools:
-      command: node
-      args: ["tools/server.mjs"]
-      env:
-        API_KEY: "{{env.CUSTOM_API_KEY}}"
-  fallback: [claude, codex, gemini]
-  onSpawnError: swap
+  claude:
+    command: npx
+    args: ["-y", "@agentclientprotocol/claude-agent-acp"]
+    model: claude-sonnet-5
+mcpServers:
+  custom-tools:
+    command: node
+    args: ["tools/server.mjs"]
+    env:
+      API_KEY: "{{env.CUSTOM_API_KEY}}"
 
 vars:
   test_cmd: npm test
@@ -231,6 +231,7 @@ steps:
         fallback: alert_failure
 
   - id: fix
+    provider: claude
     do: { file: prompts/fix.md }
     on:
       success: test_gate
@@ -241,6 +242,7 @@ steps:
       success: FAIL
 
   - id: report
+    provider: claude
     do: "Summarize the changes and verify test output."
     on:
       success: END
@@ -326,13 +328,9 @@ Documentation detailing purpose, required env vars, MCP server configuration, ex
 | --- | --- | --- |
 | `name` | `string` | Human-readable name for the runbook |
 | `description` | `string` | Human-readable summary of what the agent does and its purpose |
-| `provider` | `string` | Provider for every step that does not set its own (`claude`, `codex`, `gemini`, or one declared in `providers.agentHarness`) |
-| `model` | `string` | Model for every step that does not set its own |
-| `providers.agentHarness.<name>` | `record` | Extra agent CLI, or a replacement for a built-in — `{ command, args }` |
-| `providers.fallback` | `string[]` | Ordered list of fallback providers if spawning fails |
-| `providers.onSpawnError` | `swap` \| `fail` | Fall back to next provider (`swap`) or abort (`fail`) |
+| `providers.<name>` | `record` | An agent CLI the runbook may use — `{ command, args, model }`. `model` is required. Only declared harnesses exist |
 | `vars` | `record` | Template variables available across all turns |
-| `providers.mcpServers` | `record` | MCP servers keyed by name. Stdio (`command`, `args`, `env`, same format as `.mcp.json`) or remote (`type: http\|sse`, `url`, `headers`) |
+| `mcpServers` | `record` | MCP servers keyed by name. Stdio (`command`, `args`, `env`, same format as `.mcp.json`) or remote (`type: http\|sse`, `url`, `headers`) |
 | `steps` | `array` | Ordered list of steps (minimum 1) |
 
 ### Step Fields
@@ -340,12 +338,10 @@ Documentation detailing purpose, required env vars, MCP server configuration, ex
 | Field | Type | Description |
 | --- | --- | --- |
 | `id` | `string` | Unique step identifier (cannot be `end` or `fail`) |
-| `do` | `string` \| `{ file }` | Inline prompt text, or `{ file: path }` to read it from a file relative to the agent folder |
+| `do` | `string` \| `{ file }` | Inline prompt text, or `{ file: path }` read from a file relative to the agent folder |
 | `run` | `string` | Shell command executed in the workspace (`--cwd`) |
-| `provider` | `string` | Turn-level provider override (triggers swap if changed) |
-| `model` | `string` | Turn-level model override (triggers swap if changed) |
-| `servers` | `string[]` \| `record` | Scoped MCP servers. Omitted = all; `[]` = none; a map adds per-server `allow` / `deny` tool patterns (`*` wildcard, deny wins). Never triggers a swap |
-| `promptRef` | `record` | Turn text from a server's prompt catalogue: `{ server, name, arguments }`. Exclusive with `do` and `run` |
+| `provider` | `string` | Harness under `providers` that runs this turn. Required with `do`. A change triggers a swap |
+| `mcpServers` | `string[]` \| `record` | Scoped MCP servers. Omitted = all; `[]` = none; a map adds per-server `allow` / `deny` tool patterns (`*` wildcard, deny wins). Never triggers a swap |
 | `vars` | `record` | Turn-level variable overrides |
 | `on.success` | `string` \| `object` | Target step id or `END` on success (exit 0) |
 | `on.failure` | `string` \| `object` | Target step id or `FAIL` on failure (non-zero exit). Supports `{ target, maxAttempts, fallback }` |
@@ -418,7 +414,7 @@ As the caller LLM executing this skill, you act as the **evaluator and judge** b
 2. **Inspect Run Telemetry (`$FIXTURE_DIR/.runner/run-*.jsonl`):**
    - **Terminal Outcome (`run.end`):** Did the run terminate in `outcome: "finished"` at an explicit `END` state, or did it fail/hang?
    - **Gate Executions & Retries (`step.start`, `step.end`):** Did verification gates pass cleanly? If retries occurred, did the attached failure report guide the model to fix issues within `maxAttempts` without triggering fallbacks?
-   - **Swap Efficiency (`swap`):** Were all ACP session swaps intentional? Flag any accidental swaps caused by mismatching `provider` or `model`.
+   - **Swap Efficiency (`swap`):** Were all ACP session swaps intentional? Flag any accidental swaps caused by mismatching `provider`.
    - **Tool Invocations (`tool`):** Did the agent invoke declared MCP tools correctly? Were there tool errors or unhandled exceptions?
 
 #### B. The 5-Point Evaluation Rubric
@@ -438,7 +434,7 @@ If evaluation discovers flaws, apply the corresponding fix and loop back to **St
 | Evaluation Finding | Root Cause | Targeted Refinement Action |
 | :--- | :--- | :--- |
 | **Model loops repeatedly on test failure** | Prompt lacks repair instructions or the check gives unhelpful diagnostics | In `prompts/fix.md` or `do:`, instruct the model to use the automatically attached report, analyze stack traces and edit only failing code. Improve check diagnostics when necessary. |
-| **Model hallucinates non-existent tools** | Missing or misconfigured MCP server | Add required server in `agent.yaml` `providers.mcpServers:` or scaffold a custom stdio server in `tools/server.mjs`. |
+| **Model hallucinates non-existent tools** | Missing or misconfigured MCP server | Add required server in `agent.yaml` `mcpServers:` or scaffold a custom stdio server in `tools/server.mjs`. |
 | **Unintended ACP session swap between turns** | Inconsistent `provider` or `model` fields | Align `provider` and `model` declarations across consecutive turns. |
 | **Model loses context after a required swap** | Prompt relies on ACP conversational memory | Rewrite post-swap prompt to explicitly reference file paths in `--cwd` rather than previous conversation history. |
 | **Gate fails spuriously due to environment** | `verify.mjs` has flaky assertions or missing paths | Fix `verify.mjs` path resolution (use `process.cwd()` or relative paths) and ensure clear stdout diagnostics. |
@@ -463,7 +459,7 @@ Present the validated, iteratively-refined agent package to the user:
 | **Uncapped retries** | Infinite loop burning tokens and API budget. | Always specify `maxAttempts` and a `fallback` target or `FAIL`. |
 | **Context loss on swap** | Changing provider or model wipes ACP conversation context. | Minimize swaps; make prompts after swaps self-contained. |
 | **Blind prompt thrashing** | Modifying prompts randomly during refinement without reading telemetry. | Inspect `.runner/run-*.jsonl` to pinpoint the exact failing step, swap reason, or tool error. |
-| **Secrets in prompt text** | Interpolating `{{env.KEY}}` into prompts leaks keys to the model. | Put secrets inside `providers.mcpServers.<name>.env`. |
+| **Secrets in prompt text** | Interpolating `{{env.KEY}}` into prompts leaks keys to the model. | Put secrets inside `mcpServers.<name>.env`. |
 | **Path confusion with `--cwd`** | Resolving prompt files against `--cwd` breaks when running across projects. | Runbook prompts resolve relative to the agent folder; only workspace targets use `--cwd`. |
 | **Reserved step IDs** | Naming a step `end` or `fail` conflicts with terminal transitions. | Use descriptive IDs like `report`, `finish`, `alert_failure`. |
 | **Giant un-split turns** | Combining multiple distinct tasks into one turn makes failure isolation impossible. | Split turns when the kind of work changes or when a distinct verification gate applies. |

@@ -1,39 +1,37 @@
 name: hello-world
 description: Compose a Claude writer, Codex reviewer and shell gates into a release-notes workflow
 providers:
-  agentHarness:
-    writer:
-      command: npx
-      args: ["-y", "@agentclientprotocol/claude-agent-acp"]
-      model: claude-sonnet-5
-    reviewer:
-      command: npx
-      args: ["-y", "@agentclientprotocol/codex-acp@1.13.1"]
-      model: gpt-6-luna
-  onSpawnError: fail
-  mcpServers:
-    release:
-      command: node
-      args: [tools/release.mjs]
+  claude:
+    command: npx
+    args: ["-y", "@agentclientprotocol/claude-agent-acp"]
+    model: claude-sonnet-5
+  codex:
+    command: npx
+    args: ["-y", "@agentclientprotocol/codex-acp@2.5.0"]
+    model: gpt-6-luna
+mcpServers:
+  issue_tracker:
+    command: node
+    args: [tools/release.mjs]
 vars:
-  product: Taskboard
+  PRODUCT_NAME: Taskboard
+  RELEASE_VERSION: { file: release.txt }
+  RELEASE_NOTES_STYLE: { resource: "mem://release-style", mcpServer: issue_tracker }
 steps:
   - id: check-inputs
-    servers: []
+    mcpServers: []
     run:
       command: sh
       args: [scripts/check-inputs.sh]
     on:
       failure: FAIL
   - id: collect
-    provider: writer
-    vars:
-      release: { file: release.txt }
-    servers:
-      release: { allow: [list_issues] }
+    provider: claude
+    mcpServers:
+      issue_tracker: { allow: [list_issues] }
     do: |
-      Prepare release notes for {{product}} version {{release}}.
-      Call the release server's list_issues tool with the trimmed release version.
+      Prepare release notes for {{PRODUCT_NAME}} version {{RELEASE_VERSION}}.
+      Call the issue_tracker server's list_issues tool with the trimmed release version.
       Save only issues whose status is shipped to issues.json in the working
       directory, as a JSON array preserving every field from the tool response.
       This file is the hand-off to the drafting step. Do not invent issues or
@@ -41,24 +39,15 @@ steps:
       check, fetch the issues again and replace the file.
       Do not edit input files, helper scripts, MCP data, prompts or runbooks.
   - id: draft
-    provider: writer
-    servers: []
+    provider: claude
+    mcpServers: []
     do: { file: templates/draft.md }
-    vars:
-      release: { file: release.txt }
-      release_style: { resource: "mem://release-style", server: release }
   - id: review
-    provider: reviewer
-    vars:
-      release: { file: release.txt }
-    servers: []
-    promptRef:
-      server: release
-      name: review_release
-      arguments:
-        release: "{{release}}"
+    provider: codex
+    mcpServers: []
+    do: { file: templates/review.md }
   - id: verify
-    servers: []
+    mcpServers: []
     run:
       command: sh
       args: [scripts/check.sh]

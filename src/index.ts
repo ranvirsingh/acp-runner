@@ -68,14 +68,7 @@ export {
 } from "./runtime/session.js";
 export {
   type ProviderSpec,
-  type AdapterConfigOptions,
-  BUILTIN_PROVIDERS,
   providerSpec,
-  resolveAdapterConfig,
-  knownProviderIds,
-  spawnCommandFor,
-  describeSpawn,
-  defaultProvider,
 } from "./runtime/providers.js";
 export { agentYamlSchema, validateAgentYaml } from "./config/schema.js";
 export {
@@ -86,7 +79,6 @@ export {
   resolveMcpServers,
   resolveStepScope,
   resolveStepServers,
-  resolveProvider,
   resolveModel,
 } from "./config/yaml.js";
 export { loadConfig, parseArgs } from "./cli.js";
@@ -100,7 +92,7 @@ export {
   visibleTools,
   type StepScope,
 } from "./mcp/scope.js";
-export { collectStepInputs, type StepInputs } from "./mcp/inputs.js";
+export { collectStepInputs } from "./mcp/inputs.js";
 export { lintRunbook } from "./config/lint.js";
 export { RUNNER_VERSION } from "./version.js";
 export { stateLog } from "./output/logs.js";

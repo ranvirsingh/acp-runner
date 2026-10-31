@@ -18,7 +18,7 @@ function handle(method, params) {
   if (method === "initialize") {
     return {
       protocolVersion: params?.protocolVersion ?? "2024-11-05",
-      capabilities: { tools: {}, resources: {}, prompts: {} },
+      capabilities: { tools: {}, resources: {} },
       serverInfo: { name: "taskboard-release", version: "0.1.0" },
     };
   }
@@ -36,14 +36,6 @@ function handle(method, params) {
   }
   if (method === "resources/read" && params?.uri === "mem://release-style") {
     return { contents: [{ uri: params.uri, mimeType: "text/plain", text: style }] };
-  }
-  if (method === "prompts/list") {
-    return { prompts: [{ name: "review_release", arguments: [{ name: "release", required: true }] }] };
-  }
-  if (method === "prompts/get" && params?.name === "review_release") {
-    return { messages: [{ role: "user", content: { type: "text", text:
-      `Review release-notes.md for Taskboard ${params.arguments?.release?.trim()}. Read issues.json as the source of truth. Check every shipped issue is covered in the right section, unfinished work is excluded, and limitations and upgrade actions are accurate. ${style} Fix release-notes.md directly, then briefly report what you corrected. Do not edit issues.json, inputs, helper scripts, MCP data, prompts or runbooks.`,
-    } }] };
   }
   throw new Error(`Unsupported request: ${method}`);
 }

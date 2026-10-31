@@ -10,7 +10,7 @@ import type { ProviderSpec } from "../../src/runtime/providers.ts";
 const fixturePath = join(fileURLToPath(import.meta.url), "../../fixtures/acp-child.ts");
 
 function fixtureSpec(overrides: Partial<ProviderSpec> = {}): ProviderSpec {
-  return { id: "claude", command: "bun", args: [fixturePath], ...overrides };
+  return { id: "claude", command: "bun", args: [fixturePath], model: "test-model", ...overrides };
 }
 
 function fixtureEnv(mode = "ok"): Record<string, string> {
@@ -30,17 +30,11 @@ test("AcpSession: uses the saved login when the adapter also advertises API-key 
   }
 });
 
-test("AcpSession: authenticates and retries session creation when the adapter requires login", async () => {
-  const session = await AcpSession.spawn(fixtureSpec(), {
-    cwd: "/tmp",
-    env: fixtureEnv("auth"),
-    quiet: true,
-  });
-  try {
-    assert.equal(await session.prompt([{ type: "text", text: "Review" }]), "echo:Review");
-  } finally {
-    await session.close();
-  }
+test("AcpSession: an adapter that needs a login fails and names its login methods", async () => {
+  await assert.rejects(
+    () => AcpSession.spawn(fixtureSpec(), { cwd: "/tmp", env: fixtureEnv("auth"), quiet: true }),
+    /claude needs a login \(gemini-api-key\); sign in with its own CLI first/,
+  );
 });
 
 test("AcpSession: nested npx does not inherit the runner's package selection", async () => {
@@ -105,7 +99,7 @@ test("AcpSession: auto-approves permissions seamlessly", async () => {
   await session.close();
 });
 
-test("AcpSession: needsSwap detects provider, model, and server changes", async () => {
+test("AcpSession: needsSwap detects a provider change", async () => {
   const driver = fixtureSpec();
   const session = await AcpSession.spawn(driver, {
     cwd: "/tmp",
@@ -115,9 +109,8 @@ test("AcpSession: needsSwap detects provider, model, and server changes", async 
     quiet: true,
   });
 
-  assert.equal(session.needsSwap("claude", "sonnet-3.5"), false);
-  assert.equal(session.needsSwap("codex", "sonnet-3.5"), true);
-  assert.equal(session.needsSwap("claude", "opus-3"), true);
+  assert.equal(session.needsSwap("claude"), false);
+  assert.equal(session.needsSwap("codex"), true);
 
   await session.close();
 });
@@ -170,7 +163,7 @@ test("AcpSession: handles child crash on start", async () => {
   );
 });
 
-test("AcpSession: session/new carries no vendor _meta payload", async () => {
+test("AcpSession: session/new asks Claude to use only the runner's MCP servers, and nothing else", async () => {
   const dir = mkdtempSync(join(tmpdir(), "acp-meta-"));
   const metaFile = join(dir, "meta.json");
   try {
@@ -181,7 +174,9 @@ test("AcpSession: session/new carries no vendor _meta payload", async () => {
       quiet: true,
     });
     await session.close();
-    assert.equal(readFileSync(metaFile, "utf8"), "null");
+    assert.deepEqual(JSON.parse(readFileSync(metaFile, "utf8")), {
+      claudeCode: { options: { strictMcpConfig: true } },
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

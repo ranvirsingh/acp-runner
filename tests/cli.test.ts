@@ -12,7 +12,7 @@ function withRunbook(fn: (path: string, dir: string) => void): void {
   const path = join(dir, "runbook.yaml");
   writeFileSync(
     path,
-    "name: demo\nprovider: codex\nsteps:\n  - id: implement\n    do: Ship it\n",
+    "providers:\n  codex:\n    command: npx\n    model: test-model\nname: demo\nsteps:\n  - id: implement\n    provider: codex\n    do: Ship it\n",
   );
   try {
     fn(path, dir);
@@ -25,7 +25,6 @@ test("parseArgs: no arguments uses ./agent.yaml, the current directory and trace
   assert.deepEqual(parseArgs([]), {
     yamlPath: "./agent.yaml",
     cwd: resolve(process.cwd()),
-    provider: undefined,
     trace: "stdout",
   });
 });
@@ -77,22 +76,20 @@ test("parseArgs: --cwd is resolved to an absolute path", () => {
   assert.equal(parseArgs(["--cwd", "/tmp/hello-world"]).cwd, "/tmp/hello-world");
 });
 
-test("parseArgs: accepts every supported --provider value", () => {
-  assert.equal(parseArgs(["--provider", "claude"]).provider, "claude");
-  assert.equal(parseArgs(["--provider", "codex"]).provider, "codex");
-  assert.equal(parseArgs(["--provider", "gemini"]).provider, "gemini");
+test("parseArgs: --provider is not a flag, because the runbook names its providers", () => {
+  assert.throws(() => parseArgs(["--provider", "codex"]), /unknown flag --provider/);
 });
 
 test("parseArgs: flags may follow the runbook", () => {
-  const args = parseArgs(["demo.yaml", "--provider", "codex", "--cwd", "/tmp/x"]);
+  const args = parseArgs(["demo.yaml", "--trace", "off", "--cwd", "/tmp/x"]);
   assert.equal(args.yamlPath, "demo.yaml");
-  assert.equal(args.provider, "codex");
+  assert.equal(args.trace, "off");
   assert.equal(args.cwd, "/tmp/x");
 });
 
 test("parseArgs: rejects a flag with no value", () => {
   assert.throws(() => parseArgs(["--cwd"]), /--cwd requires a value/);
-  assert.throws(() => parseArgs(["--provider"]), /--provider requires a value/);
+  assert.throws(() => parseArgs(["--trace"]), /--trace requires a value/);
 });
 
 test("parseArgs: rejects unknown flags", () => {
@@ -109,16 +106,8 @@ test("loadConfig: reads the runbook named by the parsed arguments", () => {
 
     assert.equal(config.yamlPath, path);
     assert.equal(config.cwd, dir);
-    assert.equal(config.providerOverride, undefined);
     assert.equal(config.runbook.name, "demo");
     assert.equal(config.runbook.steps[0].id, "implement");
-  });
-});
-
-test("loadConfig: carries the --provider override onto the config", () => {
-  withRunbook((path) => {
-    const config = loadConfig(parseArgs([path, "--provider", "codex"]));
-    assert.equal(config.providerOverride, "codex");
   });
 });
 
@@ -131,7 +120,7 @@ test("loadConfig: a folder positional resolves to its agent.yaml", () => {
   try {
     writeFileSync(
       join(dir, "agent.yaml"),
-      "name: folder-agent\nsteps:\n  - id: implement\n    do: Ship it\n",
+      "providers:\n  claude:\n    command: npx\n    model: test-model\nname: folder-agent\nsteps:\n  - id: implement\n    provider: claude\n    do: Ship it\n",
     );
     const config = loadConfig(parseArgs([dir]));
     assert.equal(config.yamlPath, join(dir, "agent.yaml"));
@@ -145,7 +134,7 @@ test("loadConfig: creates cwd directory if it does not exist", () => {
   const dir = mkdtempSync(join(tmpdir(), "acp-cli-test-"));
   const nonExistentCwd = join(dir, "new-workspace");
   const yamlPath = join(dir, "agent.yaml");
-  writeFileSync(yamlPath, "steps:\n  - id: a\n    do: Ship it\n");
+  writeFileSync(yamlPath, "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: a\n    provider: claude\n    do: Ship it\n");
   try {
     assert.equal(existsSync(nonExistentCwd), false);
     loadConfig(parseArgs([yamlPath, "--cwd", nonExistentCwd]));

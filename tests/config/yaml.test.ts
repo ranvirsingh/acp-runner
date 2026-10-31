@@ -8,7 +8,6 @@ import {
   needsNewBody,
   resolveMcpServers,
   resolveModel,
-  resolveProvider,
   resolveRunbookPath,
   resolveStepCommand,
   resolveStepPrompt,
@@ -17,13 +16,6 @@ import {
   stepBody,
 } from "../../src/config/yaml.ts";
 import type { AgentYaml, RunnerConfig } from "../../src/types.ts";
-
-test("resolveStepPrompt leaves external MCP text unchanged without appending feedback", () => {
-  const step = { id: "review", promptRef: { server: "cat", name: "review" } };
-  const config: RunnerConfig = { yamlPath: "agent.yaml", cwd: "/tmp", runbook: { steps: [step] } };
-  const body = "Review {{feedback}} and ${{vars.example}} literally.";
-  assert.equal(resolveStepPrompt(config, step, { feedback: "old error" }, { body }), body);
-});
 
 function configFor(runbook: AgentYaml, extra: Partial<RunnerConfig> = {}): RunnerConfig {
   return {
@@ -47,32 +39,48 @@ function withYamlFile(body: string, fn: (path: string) => void): void {
 
 test("loadAgentYaml: parses a full runbook", () => {
   withYamlFile(
-    `
-name: provider-swap
-provider: claude
-model: claude-sonnet-4-6
+    `name: provider-swap
 providers:
-  fallback: [claude, gemini, codex]
-  onSpawnError: swap
+  writer:
+    command: npx
+    model: claude-sonnet-5
+  reviewer:
+    command: npx
+    model: gpt-6-luna
 steps:
   - id: implement
+    provider: writer
     do: Implement it
   - id: harden
-    provider: gemini
-    model: composer
+    provider: reviewer
     do: Harden it
 `,
     (path) => {
       const parsed = loadAgentYaml(path);
       assert.equal(parsed.name, "provider-swap");
-      assert.equal(parsed.provider, "claude");
-      assert.equal(parsed.model, "claude-sonnet-4-6");
-      assert.deepEqual(parsed.providers?.fallback, ["claude", "gemini", "codex"]);
-      assert.equal(parsed.providers?.onSpawnError, "swap");
+      assert.deepEqual(Object.keys(parsed.providers ?? {}), ["writer", "reviewer"]);
       assert.equal(parsed.steps.length, 2);
-      assert.equal(parsed.steps[1].provider, "gemini");
+      assert.equal(parsed.steps[1].provider, "reviewer");
     },
   );
+});
+
+test("resolveModel: a step's model is its harness's model", () => {
+  const config: RunnerConfig = {
+    yamlPath: "agent.yaml",
+    cwd: "/tmp",
+    runbook: {
+      providers: { writer: { command: "npx", model: "claude-sonnet-5" } },
+      steps: [{ id: "one", provider: "writer", do: "Ship it" }, { id: "two", run: "true" }],
+    },
+  };
+  assert.equal(resolveModel(config, config.runbook.steps[0]), "claude-sonnet-5");
+  assert.equal(resolveModel(config, config.runbook.steps[1]), undefined);
+});
+
+test("needsNewBody: only a different provider needs a new body", () => {
+  assert.equal(needsNewBody({ provider: "claude" }, { provider: "gemini" }), true);
+  assert.equal(needsNewBody({ provider: "claude" }, { provider: "claude" }), false);
 });
 
 test("loadAgentYaml: rejects a runbook with no steps", () => {
@@ -109,71 +117,6 @@ test("stepBody: keeps the original spacing of a real body", () => {
   assert.equal(stepBody({ id: "a", do: "  Review the diff\n" }, "."), "  Review the diff\n");
 });
 
-test("resolveProvider: a step override wins over everything else", () => {
-  const config = configFor(
-    { provider: "claude", steps: [] },
-    { providerOverride: "codex" },
-  );
-  assert.equal(resolveProvider(config, { id: "a", provider: "gemini" }), "gemini");
-});
-
-test("resolveProvider: the CLI override wins over the runbook provider", () => {
-  const config = configFor(
-    { provider: "claude", steps: [] },
-    { providerOverride: "codex" },
-  );
-  assert.equal(resolveProvider(config, { id: "a", do: "Ship it" }), "codex");
-});
-
-test("resolveProvider: the runbook provider is used when nothing overrides it", () => {
-  const config = configFor({ provider: "codex", steps: [] });
-  assert.equal(resolveProvider(config, { id: "a", do: "Ship it" }), "codex");
-  assert.equal(resolveProvider(config), "codex");
-});
-
-test("resolveProvider: a runbook-declared provider can be the runbook provider", () => {
-  const config = configFor({
-    provider: "amp",
-    providers: { agentHarness: { amp: { command: "amp", args: ["--acp"] } } },
-    steps: [],
-  });
-  assert.equal(resolveProvider(config), "amp");
-});
-
-test("resolveProvider: falls back to a real provider when the runbook says nothing", () => {
-  const config = configFor({ steps: [] });
-  assert.ok(["claude", "codex", "gemini"].includes(resolveProvider(config)));
-});
-
-test("resolveModel: a step model wins over the runbook model", () => {
-  const config = configFor({ model: "sonnet", steps: [] });
-  assert.equal(resolveModel(config, { id: "a", model: "composer" }), "composer");
-});
-
-test("resolveModel: the runbook model applies when the step names no model", () => {
-  const config = configFor({ model: "sonnet", steps: [] });
-  assert.equal(resolveModel(config, { id: "a", do: "Ship it" }), "sonnet");
-  assert.equal(resolveModel(config), "sonnet");
-});
-
-test("resolveModel: undefined when no model is configured anywhere", () => {
-  assert.equal(resolveModel(configFor({ steps: [] }), { id: "a", do: "Ship it" }), undefined);
-});
-
-test("resolveModel: step overrides selected harness, which overrides the workflow default", () => {
-  const config = configFor({
-    model: "workflow-model",
-    providers: { agentHarness: {
-      writer: { command: "writer", model: "writer-model" },
-      reviewer: { command: "reviewer", model: "reviewer-model" },
-    } },
-    steps: [],
-  }, { providerOverride: "reviewer" });
-  assert.equal(resolveModel(config), "reviewer-model");
-  assert.equal(resolveModel(config, { id: "a", provider: "writer" }), "writer-model");
-  assert.equal(resolveModel(config, { id: "a", provider: "writer", model: "step-model" }), "step-model");
-});
-
 test("resolveStepPrompt: renders the step body with workflow variables", () => {
   const config = configFor({
     vars: { done_token: "DONE" }, steps: [{ id: "verify", do: "Reply {{done_token}}" }],
@@ -191,32 +134,6 @@ test("resolveStepPrompt: an empty body is an error, since there is no goal to fa
 
 test("needsNewBody: a different provider needs a new body", () => {
   assert.equal(needsNewBody({ provider: "claude" }, { provider: "gemini" }), true);
-});
-
-test("needsNewBody: the same provider and model stays on the live connection", () => {
-  assert.equal(
-    needsNewBody({ provider: "claude", model: "sonnet" }, { provider: "claude", model: "sonnet" }),
-    false,
-  );
-  assert.equal(needsNewBody({ provider: "claude" }, { provider: "claude" }), false);
-});
-
-test("needsNewBody: switching model on the same provider needs a new body", () => {
-  assert.equal(
-    needsNewBody({ provider: "claude", model: "sonnet" }, { provider: "claude", model: "opus" }),
-    true,
-  );
-});
-
-test("needsNewBody: naming a model where there was none needs a new body", () => {
-  assert.equal(needsNewBody({ provider: "claude" }, { provider: "claude", model: "opus" }), true);
-});
-
-test("needsNewBody: a step that names no model inherits the live one", () => {
-  assert.equal(
-    needsNewBody({ provider: "claude", model: "sonnet" }, { provider: "claude" }),
-    false,
-  );
 });
 
 test("resolveStepPrompt: do { file } loads the body relative to the yaml", () => {
@@ -264,7 +181,7 @@ test("loadAgentYaml: rejects a runbook still wrapped in agent:", () => {
 });
 
 test("loadAgentYaml: schema paths no longer carry an agent prefix", () => {
-  withYamlFile("steps:\n  - id: one\n    provider: invalid\n", (path) => {
+  withYamlFile("providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: one\n    provider: invalid\n", (path) => {
     assert.throws(() => loadAgentYaml(path), (error: Error) => {
       assert.match(error.message, /steps\[0\]\.provider/);
       assert.equal(error.message.includes("agent.steps"), false);
@@ -291,14 +208,14 @@ function withAgentFolder(
 }
 
 test("resolveRunbookPath: a folder means the agent.yaml inside it", () => {
-  withAgentFolder({ "agent.yaml": "name: folder-agent\nsteps:\n  - id: one\n    do: Ship it\n" }, (dir) => {
+  withAgentFolder({ "agent.yaml": "providers:\n  claude:\n    command: npx\n    model: test-model\nname: folder-agent\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n" }, (dir) => {
     assert.equal(resolveRunbookPath(dir), join(dir, "agent.yaml"));
     assert.equal(loadAgentYaml(resolveRunbookPath(dir)).name, "folder-agent");
   });
 });
 
 test("resolveRunbookPath: a file path is returned unchanged", () => {
-  withAgentFolder({ "runbook.yaml": "steps:\n  - id: one\n    do: Ship it\n" }, (dir) => {
+  withAgentFolder({ "runbook.yaml": "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n" }, (dir) => {
     const path = join(dir, "runbook.yaml");
     assert.equal(resolveRunbookPath(path), path);
   });
@@ -313,7 +230,7 @@ test("resolveRunbookPath: a folder with no agent.yaml names the folder", () => {
 test("resolveStepPrompt: a folder's prompt file resolves inside the folder", () => {
   withAgentFolder(
     {
-      "agent.yaml": "vars:\n  focus: security\nsteps:\n  - id: harden\n    do: { file: prompts/body.md }\n",
+      "agent.yaml": "providers:\n  claude:\n    command: npx\n    model: test-model\nvars:\n  focus: security\nsteps:\n  - id: harden\n    provider: claude\n    do: { file: prompts/body.md }\n",
       "prompts/body.md": "Review for {{focus}}.\n",
     },
     (dir) => {
@@ -327,7 +244,7 @@ test("resolveStepPrompt: a folder's prompt file resolves inside the folder", () 
 function withMcpFolder(
   yaml: string,
   files: Record<string, string>,
-  fn: (dir: string, servers: Array<Record<string, any>>) => void,
+  fn: (dir: string, mcpServers: Array<Record<string, any>>) => void,
 ): void {
   withAgentFolder({ "agent.yaml": yaml, ...files }, (dir) => {
     const yamlPath = resolveRunbookPath(dir);
@@ -341,7 +258,7 @@ test("resolveMcpServers: a runbook with no mcpServers has no servers", () => {
 });
 
 test("resolveMcpServers: the map key is the name, and args and env default to empty", () => {
-  const config = configFor({ providers: { mcpServers: { echo: { command: "node" } } }, steps: [] });
+  const config = configFor({ mcpServers: { echo: { command: "node" } }, steps: [] });
   assert.deepEqual(resolveMcpServers(config), [
     { type: "stdio", name: "echo", command: "node", args: [], env: [] },
   ]);
@@ -349,7 +266,7 @@ test("resolveMcpServers: the map key is the name, and args and env default to em
 
 test("resolveMcpServers: a folder-relative arg resolves inside the agent folder, never the cwd", () => {
   withMcpFolder(
-    'providers:\n  mcpServers:\n    echo:\n      command: node\n      args: ["tools/echo.mjs"]\nsteps:\n  - id: one\n    do: Ship it\n',
+    'providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  echo:\n    command: node\n    args: ["tools/echo.mjs"]\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n',
     { "tools/echo.mjs": "" },
     (dir, servers) => {
       assert.equal(servers[0].args[0], join(dir, "tools/echo.mjs"));
@@ -360,7 +277,7 @@ test("resolveMcpServers: a folder-relative arg resolves inside the agent folder,
 
 test("resolveMcpServers: an arg with a slash that is not in the folder is left alone", () => {
   withMcpFolder(
-    'providers:\n  mcpServers:\n    echo:\n      command: node\n      args: ["tools/absent.mjs"]\nsteps:\n  - id: one\n    do: Ship it\n',
+    'providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  echo:\n    command: node\n    args: ["tools/absent.mjs"]\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n',
     {},
     (_dir, servers) => {
       assert.deepEqual(servers[0].args, ["tools/absent.mjs"]);
@@ -370,7 +287,7 @@ test("resolveMcpServers: an arg with a slash that is not in the folder is left a
 
 test("resolveMcpServers: an arg with no slash is never touched, even when the folder holds that file", () => {
   withMcpFolder(
-    'providers:\n  mcpServers:\n    echo:\n      command: node\n      args: ["--profile", "default"]\nsteps:\n  - id: one\n    do: Ship it\n',
+    'providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  echo:\n    command: node\n    args: ["--profile", "default"]\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n',
     { default: "" },
     (_dir, servers) => {
       assert.deepEqual(servers[0].args, ["--profile", "default"]);
@@ -380,7 +297,7 @@ test("resolveMcpServers: an arg with no slash is never touched, even when the fo
 
 test("resolveMcpServers: an absolute arg is left alone", () => {
   withMcpFolder(
-    'providers:\n  mcpServers:\n    echo:\n      command: node\n      args: ["/opt/tools/echo.mjs"]\nsteps:\n  - id: one\n    do: Ship it\n',
+    'providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  echo:\n    command: node\n    args: ["/opt/tools/echo.mjs"]\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n',
     {},
     (_dir, servers) => {
       assert.deepEqual(servers[0].args, ["/opt/tools/echo.mjs"]);
@@ -390,7 +307,7 @@ test("resolveMcpServers: an absolute arg is left alone", () => {
 
 test("resolveMcpServers: a bare command stays a PATH lookup, a folder command is made absolute", () => {
   withMcpFolder(
-    "providers:\n  mcpServers:\n    bare:\n      command: node\n    local:\n      command: tools/serve.sh\nsteps:\n  - id: one\n    do: Ship it\n",
+    "providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  bare:\n    command: node\n  local:\n    command: tools/serve.sh\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n",
     { "tools/serve.sh": "" },
     (dir, servers) => {
       assert.equal(servers[0].command, "node");
@@ -403,7 +320,7 @@ test("resolveMcpServers: env becomes a name/value list and renders {{env.X}}", (
   process.env.ACP_TEST_MCP_TOKEN = "sekret";
   try {
     const config = configFor({
-      providers: { mcpServers: { echo: { command: "node", env: { TOKEN: "{{env.ACP_TEST_MCP_TOKEN}}" } } } },
+      mcpServers: { echo: { command: "node", env: { TOKEN: "{{env.ACP_TEST_MCP_TOKEN}}" } } },
       steps: [],
     });
     assert.deepEqual(resolveMcpServers(config)[0], {
@@ -420,7 +337,7 @@ test("resolveMcpServers: env becomes a name/value list and renders {{env.X}}", (
 
 test("resolveMcpServers: an unset environment variable fails and names the server", () => {
   const config = configFor({
-    providers: { mcpServers: { "gcp-usage": { command: "python", env: { KEY: "{{env.ACP_TEST_ABSENT}}" } } } },
+    mcpServers: { "gcp-usage": { command: "python", env: { KEY: "{{env.ACP_TEST_ABSENT}}" } } },
     steps: [],
   });
   assert.throws(
@@ -431,7 +348,7 @@ test("resolveMcpServers: an unset environment variable fails and names the serve
 
 test("resolveMcpServers: a pasted json block resolves the same as the block form", () => {
   withMcpFolder(
-    'providers: { mcpServers: { "echo": { "command": "node", "args": ["tools/echo.mjs"], "type": "stdio" } } }\nsteps:\n  - id: one\n    do: Ship it\n',
+    'providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers: { "echo": { "command": "node", "args": ["tools/echo.mjs"], "type": "stdio" } }\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n',
     { "tools/echo.mjs": "" },
     (dir, servers) => {
       assert.deepEqual(servers, [
@@ -443,7 +360,7 @@ test("resolveMcpServers: a pasted json block resolves the same as the block form
 
 test("resolveStepServers: a step that names no servers gets the whole catalogue", () => {
   const config = configFor({
-    providers: { mcpServers: { echo: { command: "node" }, other: { command: "node" } } },
+    mcpServers: { echo: { command: "node" }, other: { command: "node" } },
     steps: [{ id: "one", do: "A" }],
   });
   assert.deepEqual(
@@ -454,10 +371,10 @@ test("resolveStepServers: a step that names no servers gets the whole catalogue"
 
 test("resolveStepServers: servers names a subset, and an empty list means no tools", () => {
   const config = configFor({
-    providers: { mcpServers: { echo: { command: "node" }, other: { command: "node" } } },
+    mcpServers: { echo: { command: "node" }, other: { command: "node" } },
     steps: [
-      { id: "one", do: "A", servers: ["other"] },
-      { id: "two", do: "B", servers: [] },
+      { id: "one", do: "A", mcpServers: ["other"] },
+      { id: "two", do: "B", mcpServers: [] },
     ],
   });
   assert.deepEqual(
@@ -471,28 +388,16 @@ test("needsNewBody: a different server set stays on the live connection", () => 
   assert.equal(needsNewBody({ provider: "claude" }, { provider: "claude" }), false);
 });
 
-test("needsNewBody: only the provider and the model can force a new body", () => {
-  assert.equal(needsNewBody({ provider: "claude" }, { provider: "gemini" }), true);
-  assert.equal(
-    needsNewBody({ provider: "claude", model: "a" }, { provider: "claude", model: "b" }),
-    true,
-  );
-  assert.equal(
-    needsNewBody({ provider: "claude", model: "a" }, { provider: "claude", model: "a" }),
-    false,
-  );
-});
-
 test("resolveMcpServers: a remote server renders headers and leaves the url alone", () => {
   const config = configFor({
     vars: { token: "s3cret" },
-    providers: { mcpServers: {
+    mcpServers: {
       jira: {
         type: "sse",
         url: "https://mcp.example.com/jira/sse",
         headers: { Authorization: "Bearer {{token}}" },
       },
-    } },
+    },
     steps: [],
   });
   assert.deepEqual(resolveMcpServers(config), [
@@ -507,7 +412,7 @@ test("resolveMcpServers: a remote server renders headers and leaves the url alon
 
 test("resolveMcpServers: a remote url is never rewritten as a folder-relative path", () => {
   withMcpFolder(
-    "providers:\n  mcpServers:\n    db:\n      type: http\n      url: http://127.0.0.1:9/tools/db\nsteps:\n  - id: one\n    do: Ship it\n",
+    "providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  db:\n    type: http\n    url: http://127.0.0.1:9/tools/db\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n",
     { "tools/db": "" },
     (_dir, servers) => {
       assert.equal((servers[0] as { url: string }).url, "http://127.0.0.1:9/tools/db");
@@ -517,8 +422,8 @@ test("resolveMcpServers: a remote url is never rewritten as a folder-relative pa
 
 test("resolveStepServers: a servers map selects the named servers", () => {
   const config = configFor({
-    providers: { mcpServers: { a: { command: "node" }, b: { command: "node" } } },
-    steps: [{ id: "one", servers: { a: { allow: ["x"] } } }],
+    mcpServers: { a: { command: "node" }, b: { command: "node" } },
+    steps: [{ id: "one", mcpServers: { a: { allow: ["x"] } } }],
   });
   assert.deepEqual(
     resolveStepServers(config, config.runbook.steps[0]).map((server) => server.name),
@@ -528,7 +433,7 @@ test("resolveStepServers: a servers map selects the named servers", () => {
 
 test("resolveStepScope: an omitted list scopes every declared server", () => {
   const config = configFor({
-    providers: { mcpServers: { a: { command: "node" }, b: { command: "node" } } },
+    mcpServers: { a: { command: "node" }, b: { command: "node" } },
     steps: [{ id: "one", do: "Ship it" }],
   });
   assert.deepEqual(resolveStepScope(config, config.runbook.steps[0]), { a: {}, b: {} });

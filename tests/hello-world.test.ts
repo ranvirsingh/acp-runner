@@ -15,7 +15,7 @@ import { resolveMcpServers, resolveStepScope } from "../src/config/yaml.ts";
 
 const example = join(dirname(fileURLToPath(import.meta.url)), "../examples/hello-world");
 
-test("hello-world: release MCP supplies issues, style and a review prompt with step-scoped tools", async () => {
+test("hello-world: release MCP supplies issues and style with step-scoped tools", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "release example "));
   cpSync(example, cwd, { recursive: true });
   const config = loadConfig({ yamlPath: join(cwd, "agent.yaml"), cwd, trace: "off" });
@@ -27,23 +27,19 @@ test("hello-world: release MCP supplies issues, style and a review prompt with s
     await client.connect(clientSide);
     const collect = config.runbook.steps.find((step) => step.id === "collect")!;
     await proxy.setScope(resolveStepScope(config, collect), collect.id);
-    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["release__list_issues"]);
-    const result = await client.callTool({ name: "release__list_issues", arguments: { release: "1.2.0" } });
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), ["issue_tracker__list_issues"]);
+    const result = await client.callTool({ name: "issue_tracker__list_issues", arguments: { release: "1.2.0" } });
     const content = result.content as Array<{ type: string; text: string }>;
     const issues = JSON.parse(content[0].text);
     assert.deepEqual(issues.map((issue: { id: string }) => issue.id), ["TASK-101", "TASK-102", "TASK-103", "TASK-104"]);
     assert.equal(issues.find((issue: { id: string }) => issue.id === "TASK-104").status, "open");
-    assert.equal((await client.callTool({ name: "release__list_issues", arguments: { release: "9.9.9" } })).isError, true);
+    assert.equal((await client.callTool({ name: "issue_tracker__list_issues", arguments: { release: "9.9.9" } })).isError, true);
     const draft = config.runbook.steps.find((step) => step.id === "draft")!;
-    assert.match((await collectStepInputs(config, draft, proxy)).vars.release_style, /Upgrade notes/);
+    assert.match((await collectStepInputs(config, draft, proxy)).RELEASE_NOTES_STYLE, /Upgrade notes/);
     const review = config.runbook.steps.find((step) => step.id === "review")!;
     await proxy.setScope(resolveStepScope(config, review), review.id);
     assert.deepEqual((await client.listTools()).tools, []);
-    assert.equal((await client.callTool({ name: "release__list_issues", arguments: { release: "1.2.0" } })).isError, true);
-    const prompt = (await collectStepInputs(config, review, proxy)).body ?? "";
-    assert.match(prompt, /1\.2\.0/);
-    assert.match(prompt, /issues\.json/);
-    assert.match(prompt, /release-notes\.md/);
+    assert.equal((await client.callTool({ name: "issue_tracker__list_issues", arguments: { release: "1.2.0" } })).isError, true);
   } finally {
     await client.close();
     await proxy.close();
@@ -91,7 +87,7 @@ test("hello-world: release checks require the shipped issue hand-off and correct
   }
 });
 
-test("hello-world: the input shell gate rejects missing, empty and unknown releases", () => {
+test("hello-world: a missing release file stops the run, and the input gate rejects empty and unknown releases", () => {
   const cwd = mkdtempSync(join(tmpdir(), "release input "));
   cpSync(example, cwd, { recursive: true });
   try {
@@ -99,9 +95,7 @@ test("hello-world: the input shell gate rejects missing, empty and unknown relea
     const check = config.runbook.steps.find((step) => step.id === "check-inputs");
     assert.ok(check);
     rmSync(join(cwd, "release.txt"));
-    const missing = runStepCheck(config, check);
-    assert.equal(missing.outcome, "failure");
-    assert.match(missing.output, /input:.*release.txt/);
+    assert.throws(() => runStepCheck(config, check), /var RELEASE_VERSION: cannot read release\.txt/);
     for (const release of ["", "  \n", "9.9.9\n"]) {
       writeFileSync(join(cwd, "release.txt"), release);
       assert.equal(runStepCheck(config, check).outcome, "failure");

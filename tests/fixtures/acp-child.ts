@@ -17,6 +17,12 @@ if (mode === "split-stderr") {
   process.stderr.write("LD");
 }
 
+if (mode === "stderr-on-close") {
+  process.stdin.on("end", () => {
+    process.stderr.write("SHUTDOWN NOISE\n");
+  });
+}
+
 if (mode === "crash-on-start") {
   process.exit(7);
 }
@@ -84,7 +90,7 @@ const app = acp
     return {
       sessionId,
       configOptions:
-        mode === "model-select"
+        mode !== "no-model-option"
           ? [
               {
                 id: "model",
@@ -95,6 +101,7 @@ const app = acp
                 options: [
                   { value: "fixture-model", name: "Fixture" },
                   { value: "other", name: "Other" },
+                  { value: "test-model", name: "Test" },
                 ],
               },
             ]

@@ -121,13 +121,19 @@ test("loadAgentYaml: accepts agent.vars and step.vars", () => {
   const path = join(dir, "agent.yaml");
   writeFileSync(
     path,
-    `
+    `providers:
+  claude:
+    command: npx
+    model: test-model
+
 vars:
   artifact: hello.txt
 steps:
   - id: one
+    provider: claude
     do: "Check {{artifact}}"
   - id: two
+    provider: claude
     vars:
       artifact: README.md
     do: "Check {{artifact}}"

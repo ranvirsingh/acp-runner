@@ -45,7 +45,7 @@ cp -R examples/hello-world/. "$work"
 bun run start -- "$work" --cwd "$work"
 ```
 
-The example declares a Claude `writer` and a Codex `reviewer` under `providers.agentHarness`, with explicit selections on every model step. It checks the release input, fetches sample issues through local MCP, drafts and reviews `release-notes.md`, and checks issue coverage with up to two repair loops. It needs Node 20+ with `npx`, plus `sh` and `jq` for the deterministic gates. To use different agents, edit the harness declarations as described in the [example README](examples/hello-world/README.md#choose-different-acp-agents); CLI `--provider` does not override explicit step selections. Usage limits and charges depend on each provider, account, and plan.
+The example declares two harnesses under `providers`, `claude` and `codex`, and every model step names the one it uses. It checks the release input, fetches sample issues through local MCP, drafts and reviews `release-notes.md`, and checks issue coverage with up to two repair loops. It needs Node 20+ with `npx`, plus `sh` and `jq` for the deterministic gates. To use different agents, edit the harness declarations as described in the [example README](examples/hello-world/README.md#choose-different-acp-agents). Usage limits and charges depend on each provider, account, and plan.
 
 Check a runbook without running it:
 
@@ -93,8 +93,9 @@ examples/hello-world/
     check-inputs.sh   # deterministic gate for the release input
   templates/
     draft.md          # file prompt for release notes
+    review.md         # file prompt for the review
   tools/
-    release.mjs       # local MCP tool, resource and review prompt
+    release.mjs       # local MCP tool and resource
     issues.json       # sample issue catalogue
 ```
 
@@ -105,42 +106,39 @@ An illustrative multi-provider runbook for your own agent folder (create the ref
 ```yaml
 name: provider-swap
 description: Implement, verify, then harden a change
-provider: claude            # claude | codex | gemini | gemini-pro
-model: claude-sonnet-5
-providers:
-  agentHarness:
-    gemini-pro:             # add a vendor, or replace a built-in
-      command: gemini
-      args: ["--model", "gemini-2.5-pro", "--acp"]
-  fallback: [claude, codex, gemini]
-  onSpawnError: swap        # swap | fail
+providers:                  # every harness the runbook uses, by any name
+  writer:
+    command: npx
+    args: ["-y", "@agentclientprotocol/claude-agent-acp"]
+    model: claude-sonnet-5
+  reviewer:
+    command: npx
+    args: ["-y", "@agentclientprotocol/codex-acp@2.5.0"]
+    model: gpt-6-luna
 vars:
   done_token: DONE
 steps:
   - id: implement
+    provider: writer
     do: |
       Implement the change.
   - id: verify
+    provider: writer        # same harness → same session
     do: |
       If the work is complete, reply {{done_token}} only.
       Otherwise continue.
   - id: harden
-    provider: codex         # different provider → swap
+    provider: reviewer      # different harness → swap
     vars:
       review_focus: security and edge cases
     do: { file: prompts/harden.md } # long bodies live outside the YAML
-  - id: second-opinion
-    provider: gemini-pro    # a provider declared above
-    vars:
-      review_focus: anything the last reviewer missed
-    do: { file: prompts/harden.md }
 ```
 
 ### Two kinds of step
 
 | Kind | Looks like | What happens |
 | --- | --- | --- |
-| **Model turn** | has `do` or `promptRef` | The text is sent to the vendor CLI as one `session/prompt` |
+| **Model turn** | has `do` | The text is sent to the vendor CLI as one `session/prompt` |
 | **Script** | has `run:` and no prompt body | A shell command runs in `--cwd`. Exit 0 is success, anything else is failure |
 
 A model step may **also** carry `run:`. Then the turn happens first and the command runs afterwards as its check — that is how "do the work, then prove it" fits in one step.
@@ -153,13 +151,9 @@ A model step may **also** carry `run:`. Then the turn happens first and the comm
 | --- | --- |
 | `name` | Name of the workflow |
 | `description` | What the workflow does |
-| `provider` | Provider for every step that does not set its own |
-| `model` | Default when neither the step nor its selected harness sets a model |
+| `providers.<name>` | An agent CLI the runbook may use — `{ command, args, model }`. `model` is required. These are the only harnesses that exist |
+| `mcpServers` | MCP servers this runbook may use — stdio, `http` or `sse` |
 | `vars` | Template variables for the whole runbook |
-| `providers.agentHarness.<name>` | Extra agent CLIs, or replacements for a built-in — `{ command, args }` each |
-| `providers.mcpServers` | MCP servers this runbook may use — stdio, `http` or `sse` |
-| `providers.fallback` | Providers to try, in order, after a spawn or auth failure. Defaults to `[claude, codex, gemini]` |
-| `providers.onSpawnError` | `swap` along `providers.fallback` (default), or `fail` immediately |
 | `steps` | The agenda. At least one |
 
 ### Step
@@ -168,11 +162,10 @@ A model step may **also** carry `run:`. Then the turn happens first and the comm
 | --- | --- |
 | `id` | Label for the turn. Must be unique, and cannot be the reserved `end` or `fail` |
 | `do` | Turn text — inline, or `{ file: path }` read from a file relative to the YAML |
-| `promptRef` | Turn text from an MCP server's prompt catalogue. Exclusive with `do` and `run` |
 | `run` | Shell command — a pure script step, or the check that follows a turn |
-| `provider` / `model` | Override for this step only |
+| `provider` | Which harness under `providers` runs this step. Required on every step with `do`; a script step needs none and keeps the live session |
 | `vars` | Variable overrides for this step |
-| `servers` | Which declared MCP servers this step gets, and which of their tools |
+| `mcpServers` | Which declared MCP servers this step gets, and which of their tools |
 | `on.success` / `on.failure` | Where to go next. A step id, or the terminal `END` / `FAIL` |
 | `retry` | Shorthand for "on failure, run me again" — `{ maxAttempts, fallback }` |
 
@@ -216,16 +209,16 @@ vars:
   done_token: DONE                    # scalar
   schema: { file: schemas/out.json }  # file contents, relative to the YAML
   branch: { env: GIT_BRANCH }         # environment variable, must be set
-  ddl: { resource: "postgres://prod/schemas/public", server: database }
+  ddl: { resource: "postgres://prod/schemas/public", mcpServer: database }
 ```
 
-Scalars, `{ file }` and `{ env }` are read once when the runbook loads, and what they return is **not** re-scanned for placeholders. A missing file or an unset variable fails the run before anything spawns. `{ resource }` is read per step over the runner's own MCP connection — see [Resources and prompts](#resources-and-prompts).
+Scalars, `{ file }` and `{ env }` are read once when the runbook loads, and what they return is **not** re-scanned for placeholders. A missing file or an unset variable fails the run before anything spawns. `{ resource }` is read per step over the runner's own MCP connection — see [Resources](#resources).
 
 No context variables are injected automatically. To use the working directory in a template, declare it yourself under `vars`.
 
 ### Automatic failure context
 
-The runner attaches failure details automatically when the next model turn runs. Write only the task in `do` or `promptRef`; no feedback placeholder is needed:
+The runner attaches failure details automatically when the next model turn runs. Write only the task in `do`; no feedback placeholder is needed:
 
 ```yaml
 - id: implement
@@ -240,7 +233,7 @@ Failure blocks are capped at 16,384 UTF-8 bytes, including their header. Long ou
 
 `{{feedback}}`, `{{vars.feedback}}` and their `${{ ... }}` forms are rejected by lint and template rendering with an instruction to remove them. Escaped literals and text returned by MCP prompts are not reinterpreted as runner templates.
 
-Every model step needs a body — `do:` or `promptRef:`. A step with none of those and no `run:` is rejected when the runbook loads. There is no command-line goal to fall back on: the prompt lives in the runbook.
+Every model step needs a body in `do:`. A step with no `do:` and no `run:` is rejected when the runbook loads. There is no command-line goal to fall back on: the prompt lives in the runbook.
 
 ### Secrets
 
@@ -342,31 +335,31 @@ A tool shared between agents lives in no one folder, so give it an absolute path
 ```yaml
 steps:
   - id: report
-    servers: [gcp-usage]                 # every tool of that server
+    mcpServers: [gcp-usage]                 # every tool of that server
   - id: investigate
-    servers:
+    mcpServers:
       telemetry: { allow: ["query_*", "list_*"] }
       database: { allow: ["select"], deny: ["drop_*", "truncate_*"] }
   - id: notify
-    servers: []                          # no runbook server at all
-  - id: wrap-up                          # no servers: → every server
+    mcpServers: []                          # no runbook server at all
+  - id: wrap-up                          # no mcpServers: → every server
 ```
 
 | Written | Tools visible to the step |
 | --- | --- |
-| `servers` omitted | every tool of every declared server |
-| `servers: []` | none |
-| `servers: [a, b]` | every tool of `a` and `b` |
-| `servers: { a: {} }` | every tool of `a` |
-| `servers: { a: { allow: [p] } }` | tools of `a` matching any allow pattern |
-| `servers: { a: { deny: [p] } }` | tools of `a` not matching any deny pattern |
+| `mcpServers` omitted | every tool of every declared server |
+| `mcpServers: []` | none |
+| `mcpServers: [a, b]` | every tool of `a` and `b` |
+| `mcpServers: { a: {} }` | every tool of `a` |
+| `mcpServers: { a: { allow: [p] } }` | tools of `a` matching any allow pattern |
+| `mcpServers: { a: { deny: [p] } }` | tools of `a` not matching any deny pattern |
 | both | allow filters first, then deny removes; deny always wins |
 
 Patterns match the bare tool name as the server reports it, never a vendor prefix. `*` is the only wildcard and matches any run of characters. Matching is case-sensitive. A name that was never declared is a lint error.
 
 **Changing the scope does not cost a swap.** Consecutive model steps with different server or tool scopes share one session and one conversation history. Only a provider or model change starts a new body.
 
-> ⚠ `servers:` scopes what the runbook adds, not everything the turn has. What the runner registers on `session/new` is added to whatever the vendor CLI is already configured with — its own file and shell tools, and its own MCP servers from the user's config. A step with `servers: []` still had `mcp__aws-docs__*` on the machine this was tested on. It removes your server from that turn; it is not a sandbox.
+> ⚠ `mcpServers:` scopes what the runbook adds, not everything the turn has. What the runner registers on `session/new` is added to whatever the vendor CLI is already configured with — its own file and shell tools, and its own MCP servers from the user's config. The runner asks Claude Code to skip the user's MCP servers (`strictMcpConfig` in `session/new` `_meta`); Codex and Antigravity have no such switch and still load theirs. It removes your server from that turn; it is not a sandbox.
 
 ### The runner proxy
 
@@ -379,30 +372,23 @@ The runner runs its own MCP server in-process and registers exactly one entry, n
 
 The proxy is registered over `http` on `127.0.0.1`. A vendor whose `initialize` does not report `agentCapabilities.mcpCapabilities.http` fails at spawn with an error naming the provider; Claude, Codex and Gemini all report it.
 
-It adds one segment to the tool name the model sees: a tool that was `mcp__release__list_issues` is now `mcp__runner__release__list_issues`. A runbook with no `providers.mcpServers` never starts a proxy.
+It adds one segment to the tool name the model sees: a tool that was `mcp__release__list_issues` is now `mcp__runner__release__list_issues`. A runbook with no `mcpServers` never starts a proxy.
 
-### Resources and prompts
+### Resources
 
-A variable can be bound to an MCP resource, and a turn body can come from a server's prompt catalogue:
+A variable can be bound to an MCP resource:
 
 ```yaml
 steps:
   - id: investigate
     do: { file: prompts/investigate.md }
     vars:
-      schema_ddl: { resource: "postgres://prod/schemas/public", server: database }
-  - id: review
-    promptRef:
-      server: jira
-      name: incident_review
-      arguments:
-        service: "{{service}}"
-    servers: [jira]
+      schema_ddl: { resource: "postgres://prod/schemas/public", mcpServer: database }
 ```
 
-The runner reads the resource over its own connection, so `server` does not have to appear in the step's `servers` scope — reading a resource exposes no tool to the model. Text content is bound as-is; a blob, a missing resource, a read error, or anything over 256 KiB fails the step the way a missing `{ file }` does. Bigger data belongs on disk via a `run:` step.
+The runner reads the resource over its own connection, so `mcpServer` does not have to appear in the step's `mcpServers` scope — reading a resource exposes no tool to the model. Text content is bound as-is; a blob, a missing resource, a read error, or anything over 256 KiB fails the step the way a missing `{ file }` does. Bigger data belongs on disk via a `run:` step.
 
-`promptRef` is the other kind of step body, exclusive with `do` and `run`. Its `arguments` values are templates. The runner calls `prompts/get` and concatenates the text of every returned message, blank line between messages; a message with non-text content fails the step. Any pending failure is sent as a separate ACP text block, just as for `do`. The flattened prompt text is left unchanged.
+Turn text is always written in the runbook, inline or in a file. MCP prompts are not a source of turn text.
 
 ## Providers, sessions and swaps
 
@@ -414,15 +400,15 @@ Run on the **same machine** that is already logged in. Do not put the ACP proces
 | Codex | `codex login` | `npx -y @agentclientprotocol/codex-acp` |
 | Gemini | `gemini` | `gemini --acp` |
 
-If no provider is named anywhere, the runner uses Claude Code.
+There is no default provider. Every model step needs a `provider:` naming a harness under `providers`; lint and the schema report a model step without one. Pure script steps need none.
 
 ### Stay, swap, finish
 
-- Same provider, no model change → **stay**: another `session/prompt` on the live connection
+- Same harness, or a script step → **stay**: the live connection is kept for the next model turn
 - A different set of MCP servers or tools → **no swap**, the proxy re-scopes in place
-- Different provider, or a model that needs a new body → **swap**: stop the child, spawn the other CLI, and send that step's own text
+- A different harness → **swap**: stop the child, spawn the other CLI, and send that step's own text
 - No more steps, or an `END` transition → **finish**
-- Spawn or auth failure, or a `FAIL` transition → **swap** along `providers.fallback`, or **fail**
+- Spawn or auth failure, or a `FAIL` transition → **fail**
 
 Vendor session history does **not** survive a swap. Only files on disk do. Nothing is prepended to the first prompt after a swap — if the next body needs prior context, say so in that step's text.
 
@@ -435,43 +421,29 @@ idle → spawning → inSession → working ↔ awaitingPermission → turnCompl
 
 A script step runs in `executingScript` instead of `spawning`/`working`. `choosingNext` is where the runbook is read and the stay / swap / finish decision is made. These names are the vocabulary of the logs and the run records, not just internal states.
 
-Permission requests are auto-approved by default: the runner picks the first `allow_once` / `allow_always` option, or the first option offered. Pass `--confirm` to prompt before approving tool calls in an interactive terminal. The runner also answers the ACP `fs/read_text_file` and `fs/write_text_file` requests, and reuses the vendor's saved login. It calls `authenticate` only if `session/new` returns ACP's authentication-required error, then retries session creation once.
+Permission requests are auto-approved by default: the runner picks the first `allow_once` / `allow_always` option, or the first option offered. Pass `--confirm` to prompt before approving tool calls in an interactive terminal. The runner also answers the ACP `fs/read_text_file` and `fs/write_text_file` requests, and reuses the vendor's saved login. It never picks a login method itself: if `session/new` returns ACP's authentication-required error, the run fails with the methods the adapter offers, and you sign in with that vendor's own CLI.
 
 ### Adding or changing a provider
 
-`provider` at the top level selects the default harness; each step can select its own. Set `model` on a harness to give that agent its own model. Model precedence is step → selected harness → top-level default → adapter default (or the current model when reusing a session). `providers:` holds how those are launched: `agentHarness` for the agent CLIs the runner speaks ACP to, `mcpServers` for the tool servers it speaks MCP to, plus `fallback` and `onSpawnError`. The three built-in harnesses are a table of command and arguments, nothing more, and an `agentHarness` entry adds a vendor or replaces how a built-in is launched:
-
-```yaml
-provider: amp
-providers:
-  agentHarness:
-    amp:
-      command: amp
-      args: ["--acp"]
-    claude:
-      command: npx
-      args: ["-y", "@agentclientprotocol/claude-agent-acp"]
-      model: claude-sonnet-5
-```
-
-A name declared here is valid anywhere a provider name goes — the top-level `provider:`, a step's `provider:`, `providers.fallback`, `--provider`. Any other name is a schema error listing what is known.
-
-The model is set the standard ACP way, with `session/set_config_option` after `session/new`. For an adapter that takes its model only on the command line, put its model flag in `args` instead of setting `model`. For example:
+Every harness lives under `providers:` in the runbook, under a name you choose. There is no built-in table, no user or project config file, and no default: the runbook alone says which command runs and which model it uses. Each model step names its harness with `provider:`; a script step names none and keeps whatever session is live.
 
 ```yaml
 providers:
-  agentHarness:
-    gemini-pro:
-      command: gemini
-      args: ["--model", "gemini-2.5-pro", "--acp"]
-    gemini-flash:
-      command: gemini
-      args: ["--model", "gemini-2.5-flash", "--acp"]
+  amp:
+    command: amp
+    args: ["--acp"]
+    model: amp-1
+  writer:
+    command: npx
+    args: ["-y", "@agentclientprotocol/claude-agent-acp"]
+    model: claude-sonnet-5
 ```
 
-Switching between those is a provider change, which already starts a new body. An explicit `model:` fails if the adapter cannot select it through ACP; the runner does not silently ignore it.
+A step naming anything not declared here is a schema error listing what is declared. The model is set the standard ACP way, with `session/set_config_option` after `session/new`, and the run fails if the adapter cannot select it. A different model is a different harness: declare it under its own name, and switching to it starts a new body.
 
-`BUILTIN_PROVIDERS`, `providerSpec` and `knownProviderIds` are exported for callers embedding the runner. Everything above the spawn command — the engine, the proxy, the records — is vendor-neutral.
+If a harness fails to start, the run fails. There is no fallback to another harness.
+
+`providerSpec` is exported for callers embedding the runner. Everything above the spawn command — the engine, the proxy, the records — is vendor-neutral.
 
 ## CLI
 
@@ -483,7 +455,6 @@ bun run start -- [agent.yaml | folder] --cwd <dir> [flags]
 | --- | --- |
 | first positional | An agent folder or a YAML file. Defaults to `./agent.yaml`. Optional. Any other positional argument is rejected — prompts belong in the runbook, not the command line |
 | `--cwd <dir>` | The workspace the agent edits. Created if missing. Defaults to the current directory |
-| `--provider <id>` | Override the runbook's top-level `provider:` (`claude`, `codex`, `gemini`). A step's own `provider:` still wins |
 | `--trace <dest>` | Where the run trace goes: `stdout` (default), `file`, `both`, or `off` |
 | `--confirm` | Prompt before approving tool calls (defaults to auto-approve) |
 | `--version` | Print the runner version |
@@ -499,8 +470,7 @@ Checks runbooks without running them and prints `ok <path>` or `fail <path>` wit
 `Ctrl-C` cancels the run. If a turn is in flight the runner sends ACP `session/cancel` and
 lets the vendor finish the turn as cancelled, so the reply and any tool calls already in
 progress end cleanly instead of the child being killed mid-write. A vendor that ignores
-the notification is closed after a one second grace period. The run then fails without
-trying `providers.fallback` — a cancelled run is not a spawn failure. A second `Ctrl-C`
+the notification is closed after a one second grace period. The run then fails. A second `Ctrl-C`
 kills the process outright.
 
 ## Logs and run records
@@ -519,7 +489,7 @@ The file is written incrementally, so `tail -f` works during a run. The two form
 The **human log** is one line per event, not per streamed chunk. A reply arrives as dozens of `session/update` notifications, so chunks log their kind only (`message`, `thought`) and a line identical to the one before it is dropped. The text itself is logged once, when the turn finishes. Tool calls print the **tool name**, not the raw `toolu_…` id.
 
 ```
-[runner] provider-swap provider=claude model=claude-sonnet-5 cwd=/tmp/demo
+[runner] provider-swap cwd=/tmp/demo
 [step] implement (claude)
   [state]  idle → spawning
   [claude] spawn npx -y @agentclientprotocol/claude-agent-acp
@@ -547,7 +517,7 @@ Trace events:
 | `step.end` | outcome, duration, exit code, feedback (truncated at 2 KB, flagged when it is) |
 | `tool` | tool name, `pending` / `completed` / `failed`, owning step, duration |
 | `transition` | from state, to state, decision, target, and why (`on.success`, `on.failure`, `fallthrough`, `fallback`, `maxAttempts`) |
-| `swap` | from/to provider and model, and the reason (`provider`, `model`, `servers`, `spawn_error`) |
+| `swap` | from/to provider and model, and the reason (always `provider`) |
 | `run.end` | outcome, total duration, steps run, swaps, error |
 
 ## Programmatic API
@@ -626,9 +596,10 @@ Lint stubs `{{env.X}}` and `{ env: X }` values, so it runs without secrets. The 
 
 ### Example
 
-The repository includes one example folder: [hello-world](examples/hello-world/README.md).
-Its single `agent.yaml` chains a shell input check, issue collection through local MCP,
-a release-notes draft, a review using an MCP prompt, and a shell output check with
+The repository includes two example folders. [riddle](examples/riddle/agent.yaml) is the
+smallest: Claude writes a riddle and Codex solves it. [hello-world](examples/hello-world/README.md)
+chains a shell input check, issue collection through local MCP,
+a release-notes draft, a review from a prompt file, and a shell output check with
 bounded repair loops. Files pass work between steps, and MCP tool scope changes per
 turn. The final result is `release-notes.md`.
 The example README also covers running the gates directly, changing the writer and

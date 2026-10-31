@@ -31,13 +31,13 @@ test("cli: --version prints the package version and exits zero", () => {
 test("cli: an unsupported provider is rejected before anything is spawned", () => {
   const dir = mkdtempSync(join(tmpdir(), "acp-index-"));
   const path = join(dir, "agent.yaml");
-  writeFileSync(path, "name: demo\nsteps:\n  - id: implement\n    do: Ship it\n");
+  writeFileSync(path, "providers:\n  writer:\n    command: npx\n    model: test-model\nname: demo\nsteps:\n  - id: implement\n    provider: unsupported\n    do: Ship it\n");
   try {
-    const result = runCli([path, "--provider", "unsupported"]);
+    const result = runCli([path]);
     assert.equal(result.status, 1);
     assert.match(
       result.stderr,
-      /unknown provider "unsupported" \(known: claude, codex, gemini\)/,
+      /unknown provider "unsupported" \(known: writer\)/,
     );
     assert.doesNotMatch(result.stdout, /\[acp\] spawn/);
   } finally {
