@@ -29,6 +29,7 @@
   },
   "files": [
     "dist",
+    ".claude/skills/create-acp-agent",
     "LICENSE",
     "README.md"
   ],
