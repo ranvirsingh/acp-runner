@@ -5,7 +5,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadConfig, parseArgs, runCli } from "../src/cli.ts";
 
-const USAGE = /usage: acp-runner \[agent\.yaml\|folder\]/;
+const USAGE = /usage: acp-runner run \[agent\.yaml\|folder\]/;
+
+async function withRunbookAsync(fn: (path: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "acp-cli-"));
+  const path = join(dir, "runbook.yaml");
+  writeFileSync(path, "providers:\n  codex:\n    command: npx\n    model: test-model\nsteps:\n  - id: a\n    provider: codex\n    do: Ship it\n");
+  try {
+    await fn(path);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function withRunbook(fn: (path: string, dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "acp-cli-"));
@@ -151,9 +162,19 @@ test("loadConfig: forwards the trace destination", () => {
   });
 });
 
-test("runCli: mcp and proxy are not subcommands", async () => {
-  await assert.rejects(() => runCli(["mcp"]), /unexpected argument "mcp"/);
-  await assert.rejects(() => runCli(["proxy"]), /unexpected argument "proxy"/);
+test("runCli: an unknown command is rejected with the usage", async () => {
+  await assert.rejects(() => runCli(["mcp"]), /unknown command "mcp"\nusage: acp-runner run/);
+  await assert.rejects(() => runCli(["proxy"]), /unknown command "proxy"/);
+});
+
+test("runCli: a runbook path needs the run command in front of it", async () => {
+  await withRunbookAsync(async (path) => {
+    await assert.rejects(() => runCli([path]), /unknown command/);
+  });
+});
+
+test("runCli: no command prints the usage", async () => {
+  await assert.rejects(() => runCli([]), /usage: acp-runner run/);
 });
 
 test("parseArgs: accepts --confirm", () => {

@@ -42,7 +42,7 @@ Run only workflows and MCP servers you trust: they execute commands on your mach
 bun install
 work=$(mktemp -d)
 cp -R examples/hello-world/. "$work"
-bun run start -- "$work" --cwd "$work"
+bun run start -- run "$work" --cwd "$work"
 ```
 
 The example declares two harnesses under `providers`, `claude` and `codex`, and every model step names the one it uses. It checks the release input, fetches sample issues through local MCP, drafts and reviews `release-notes.md`, and checks issue coverage with up to two repair loops. It needs Node 20+ with `npx`, plus `sh` and `jq` for the deterministic gates. To use different agents, edit the harness declarations as described in the [example README](examples/hello-world/README.md#choose-different-acp-agents). Usage limits and charges depend on each provider, account, and plan.
@@ -448,7 +448,7 @@ If a harness fails to start, the run fails. There is no fallback to another harn
 ## CLI
 
 ```bash
-bun run start -- [agent.yaml | folder] --cwd <dir> [flags]
+bun run start -- run [agent.yaml | folder] --cwd <dir> [flags]
 ```
 
 | Argument | Meaning |
@@ -466,6 +466,18 @@ bun run start -- lint [agent.yaml | folder ...]
 ```
 
 Checks runbooks without running them and prints `ok <path>` or `fail <path>` with every problem found. Defaults to `./agent.yaml`. Exit code is 1 if any runbook fails.
+
+```bash
+bun run start -- plan [agent.yaml | folder]
+```
+
+Prints what each step will do, without starting a harness: the provider and model, the MCP servers and tools the step can see, the prompt with its vars filled in, the `run` command, and the step that comes next on success and on failure. A `{ resource }` var is shown as `<resource URI from SERVER>`, because the plan does not start MCP servers. Exit code is 1 if the runbook is not valid.
+
+```bash
+bun run start -- check [agent.yaml | folder]
+```
+
+Starts every harness under `providers:` and does the ACP handshake. It sends no prompt. It sets the YAML's `model` the same way a run does. For each harness it prints `ok <name> (<model>)`, or `fail <name>: <reason>` when the harness does not start, needs a login, or rejects the model. A harness can accept a model that is not in the list it advertises. Claude accepts `claude-sonnet-5`, for example, but lists only aliases such as `sonnet`. In that case the `ok` line also shows the advertised list. Exit code is 1 if any harness fails.
 
 `Ctrl-C` cancels the run. If a turn is in flight the runner sends ACP `session/cancel` and
 lets the vendor finish the turn as cancelled, so the reply and any tool calls already in
@@ -630,7 +642,7 @@ cp -R examples/hello-world/. "$work"
 docker run --rm \
   --env-file .env \
   -v "$work:/agent" \
-  acp-runner /agent --cwd /agent
+  acp-runner run /agent --cwd /agent
 ```
 
 `bun run compile` produces a standalone executable instead, so a deployment image can carry `dist-bun/acp-runner` with no runtime at all — `bun run compile:linux-arm64` cross-compiles for ARM64 Linux hosts.

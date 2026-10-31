@@ -28,7 +28,7 @@ test("cli: SIGINT cancels the turn and exits non-zero", async () => {
     ].join("\n"),
   );
 
-  const child = spawnCli([yamlPath, "--cwd", dir], {
+  const child = spawnCli(["run", yamlPath, "--cwd", dir], {
     env: { ACP_FIXTURE_MODE: "cancellable" },
   });
 

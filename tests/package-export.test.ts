@@ -75,7 +75,7 @@ test("packaged CLI: executes a runbook outside the repository through an executa
     symlinkSync(join(root, "dist/cli.js"), executable);
     writeFileSync(join(cwd, "agent.yaml"), "steps:\n  - id: greet\n    run:\n      command: node\n      args: [write.mjs]\n");
     writeFileSync(join(cwd, "write.mjs"), 'import { writeFileSync } from "node:fs"; writeFileSync("hello.txt", "Hello, world!\\n");');
-    const result = spawnSync("node", [executable, "./agent.yaml", "--cwd", cwd, "--confirm", "--trace", "file"], {
+    const result = spawnSync("node", [executable, "run", "./agent.yaml", "--cwd", cwd, "--confirm", "--trace", "file"], {
       cwd,
       encoding: "utf8",
       timeout: 10000,

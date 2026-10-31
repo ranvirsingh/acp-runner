@@ -179,6 +179,15 @@ async function applyModel(
   }
 }
 
+function offeredModels(session: NewSessionResponse): Array<{ value: string; name?: string }> {
+  const modelOption = session.configOptions?.find((option) => {
+    const category = String(option.category ?? option.id ?? option.name).toLowerCase();
+    return category.includes("model");
+  });
+  if (!modelOption || modelOption.type !== "select") return [];
+  return flattenSelectValues(modelOption.options);
+}
+
 function extractInitialModel(session: NewSessionResponse): string | undefined {
   const modelOption = session.configOptions?.find((option) => {
     const category = String(option.category ?? option.id ?? option.name).toLowerCase();
@@ -252,6 +261,7 @@ export class AcpSession {
   private _sessionId: string | null = null;
   private _registeredMcpServers: acp.McpServer[] = [];
   private _effectiveModel?: string;
+  private _offeredModels: Array<{ value: string; name?: string }> = [];
   private turnText = "";
   private readonly toolNames = new Map<string, string>();
   private readonly acpLog: (message: string) => void;
@@ -274,6 +284,10 @@ export class AcpSession {
 
   get effectiveModel(): string | undefined {
     return this._effectiveModel;
+  }
+
+  get offeredModels(): Array<{ value: string; name?: string }> {
+    return this._offeredModels;
   }
 
   get registeredMcpServers(): acp.McpServer[] {
@@ -429,6 +443,7 @@ export class AcpSession {
         throw new Error(`${this.provider.id} needs a login (${methods}); sign in with its own CLI first`);
       }
       this._sessionId = session.sessionId;
+      this._offeredModels = offeredModels(session);
       this.acpLog(`session ${session.sessionId} (${mcpServers.length} mcp)`);
 
       if (this.options.model) {

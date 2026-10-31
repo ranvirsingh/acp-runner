@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import { appendFileSync, writeFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
 
 const mode = process.argv.find((arg) => arg.startsWith("--mode="))?.slice(7) ?? process.env.ACP_FIXTURE_MODE ?? "ok";
@@ -86,6 +87,7 @@ const app = acp
       writeFileSync(metaFile, JSON.stringify((ctx.params as { _meta?: unknown })._meta ?? null));
     }
     const requested = ctx.params.cwd;
+    if (!isAbsolute(requested)) throw acp.RequestError.invalidParams(undefined, "cwd must be an absolute path");
     sessionId = requested ? `sess_${requested.replace(/[^a-z0-9]/gi, "").slice(-8)}` : sessionId;
     return {
       sessionId,
@@ -112,7 +114,11 @@ const app = acp
     releaseTurn?.();
     releaseTurn = null;
   })
-  .onRequest(acp.methods.agent.session.setConfigOption, async () => {
+  .onRequest(acp.methods.agent.session.setConfigOption, async (ctx) => {
+    const offered = ["fixture-model", "other", "test-model"];
+    if (mode === "strict-model" && !offered.includes(String(ctx.params.value))) {
+      throw acp.RequestError.invalidParams(undefined, `unknown model ${String(ctx.params.value)}`);
+    }
     return { configOptions: [] };
   })
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {

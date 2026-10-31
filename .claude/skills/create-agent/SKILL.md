@@ -369,7 +369,7 @@ When authoring or modifying an agent, execute this closed-loop validation pipeli
   ┌──────────────────────────────────────────────────────────────────────────┐
   │                                                                          │
   │   Stage 1: Static Lint      ──>  Stage 2: Live Dry Run                   │
-  │   (bun src/cli.ts lint)          (bun run start -- --cwd "$FIXTURE_DIR") │
+  │   (bun src/cli.ts lint)          (bun run start -- run <agent>)          │
   │                                          │                               │
   │                                          ▼                               │
   │   Stage 4: Interactive Run  <──  Stage 3: LLM-as-a-Judge Eval            │
@@ -388,13 +388,22 @@ bun src/cli.ts lint agents/<name>
 
 Fix any syntax or structural semantic issues before proceeding to dry runs.
 
+Then read the plan, and check the harnesses on this machine:
+
+```bash
+bun src/cli.ts plan agents/<name>
+bun src/cli.ts check agents/<name>
+```
+
+`plan` starts nothing. Read it to make sure that each step has the provider, model, tool scope, filled prompt and next steps you intend. `check` starts each harness under `providers:` and sends no prompt. Fix every `fail` line (no login, or a model the harness does not offer) before the dry run.
+
 ### Stage 2: Live Dry Run (Test Fixtures)
 Seed an isolated temporary workspace with test fixtures and execute the agent against it:
 
 ```bash
 FIXTURE_DIR=$(mktemp -d)
 cp -r agents/<name>/test-fixtures/* "$FIXTURE_DIR"/ 2>/dev/null || true
-bun run start -- agents/<name> --cwd "$FIXTURE_DIR"
+bun run start -- run agents/<name> --cwd "$FIXTURE_DIR"
 ```
 
 Collect:

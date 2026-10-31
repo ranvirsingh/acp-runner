@@ -67,7 +67,7 @@ test("1. completed run writes file starting with run.start and ending with run.e
     "providers:\n  claude:\n    command: npx\n    model: test-model\nname: test-agent\nsteps:\n  - id: step-one\n    run: echo hello\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 0);
 
     const events = readEvents(dir);
@@ -99,7 +99,7 @@ test("2. every step.start has a matching step.end with the same step and attempt
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: s1\n    run: echo 1\n  - id: s2\n    run: echo 2\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 0);
 
     const events = readEvents(dir);
@@ -145,7 +145,7 @@ steps:
 `,
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 0);
 
     const events = readEvents(dir);
@@ -180,7 +180,7 @@ test("4. a step whose command exits non-zero emits step.end with that exit code 
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: fail-step\n    run: node -e 'console.error(\"bad error\"); process.exit(42)'\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 1);
 
     const events = readEvents(dir);
@@ -202,7 +202,7 @@ test("5. feedback longer than 2000 bytes is truncated and flagged", () => {
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: big-output\n    run: node -e 'console.error(\"x\".repeat(3000)); process.exit(1)'\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 1);
 
     const events = readEvents(dir);
@@ -223,7 +223,7 @@ test("6. a run that fails leaves a file ending in run.end with outcome failed an
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: failing\n    run: node -e 'process.exit(1)'\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 1);
 
     const events = readEvents(dir);
@@ -244,7 +244,7 @@ test("7. a record file killed mid-run is still valid NDJSON up to the last compl
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: slow\n    run: node -e 'setTimeout(() => {}, 10000)'\n",
   );
   try {
-    runCli([yamlPath, "--cwd", dir, "--trace", "file"], { cwd: root, timeout: 1000 });
+    runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"], { cwd: root, timeout: 1000 });
     const file = findRunFile(dir);
     const content = readFileSync(file, "utf8");
     const lines = content.trim().split("\n");
@@ -265,7 +265,7 @@ test("8. with --trace file, stdout is the human log and carries no NDJSON", () =
     "providers:\n  claude:\n    command: npx\n    model: test-model\nname: agent-one\nsteps:\n  - id: echo\n    run: echo ok\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 0);
     assert.match(result.stdout, /\[runner\] agent-one cwd=/);
     assert.match(result.stdout, /\[runner\] finished/);
@@ -283,7 +283,7 @@ test("9. with --trace off, no .runner/ directory is created and stdout stays hum
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: step\n    run: echo hello\n",
   );
   try {
-    const result = runCli(["--trace", "off", yamlPath, "--cwd", dir]);
+    const result = runCli(["run", "--trace", "off", yamlPath, "--cwd", dir]);
     assert.equal(result.status, 0);
     assert.equal(existsSync(join(dir, ".runner")), false);
     assert.match(result.stdout, /\[runner\] finished/);
@@ -298,7 +298,7 @@ test("9a. the human header names the runbook and cwd, not a provider", () => {
   const yamlPath = join(dir, "agent.yaml");
   writeFileSync(yamlPath, "name: scripts-only\nsteps:\n  - id: step\n    run: echo hello\n");
   try {
-    const result = runCli(["--trace", "off", yamlPath, "--cwd", dir]);
+    const result = runCli(["run", "--trace", "off", yamlPath, "--cwd", dir]);
     assert.equal(result.status, 0);
     assert.equal(result.stdout.split("\n")[0], `[runner] scripts-only cwd=${dir}`);
   } finally {
@@ -314,7 +314,7 @@ test("9b. the default writes no .runner/ directory, because the trace goes to st
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: step\n    run: echo hello\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir]);
+    const result = runCli(["run", yamlPath, "--cwd", dir]);
     assert.equal(result.status, 0);
     assert.equal(existsSync(join(dir, ".runner")), false);
     assert.match(result.stdout, /\{"ts":/);
@@ -331,7 +331,7 @@ test("9c. with --trace both, the same events reach stdout and the file", () => {
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: step\n    run: echo hello\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "both"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "both"]);
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), readFileSync(findRunFile(dir), "utf8").trim());
   } finally {
@@ -350,7 +350,7 @@ test("10. an unwritable workspace warns on stderr and the run still completes", 
   mkdirSync(lockedDir, { recursive: true });
   chmodSync(lockedDir, 0o555);
   try {
-    const result = runCli([yamlPath, "--cwd", lockedDir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", lockedDir, "--trace", "file"]);
     assert.equal(result.status, 0);
     assert.match(result.stderr, /warning: could not write run record/);
   } finally {
@@ -367,7 +367,7 @@ test("--trace stdout streams NDJSON events to stdout and suppresses human logs",
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: step\n    run: echo hello\n",
   );
   try {
-    const result = runCli(["--trace", "stdout", yamlPath, "--cwd", dir]);
+    const result = runCli(["run", "--trace", "stdout", yamlPath, "--cwd", dir]);
     assert.equal(result.status, 0);
     assert.doesNotMatch(result.stdout, /\[runner\]/);
     assert.doesNotMatch(result.stdout, /\[state\]/);
@@ -445,7 +445,7 @@ test("a run that fails to spawn records step.end with failure outcome and matche
     "providers:\n  broken:\n    command: acp-runner-no-such-binary-9f3a\n    model: test-model\nsteps:\n  - id: report\n    provider: broken\n    do: Say hello\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 1);
 
     const events = readEvents(dir);
@@ -479,7 +479,7 @@ test("a transition why is null unless a declared on edge caused it", () => {
     "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: failing\n    run: node -e 'process.exit(1)'\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 1);
 
     const events = readEvents(dir);
@@ -516,7 +516,7 @@ steps:
 `,
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "file"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "file"]);
     assert.equal(result.status, 0);
 
     const events = readEvents(dir);
@@ -540,7 +540,7 @@ test("human log: a script step after a model step names no harness", () => {
     `providers:\n  writer:\n    command: ${JSON.stringify(process.execPath)}\n    args: ${JSON.stringify(args)}\n    model: test-model\nsteps:\n  - id: write\n    provider: writer\n    do: Draft\n  - id: check\n    run: echo ok\n`,
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "off"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "off"]);
     assert.equal(result.status, 0);
     assert.match(result.stdout, /^\[step\] write \(writer\)$/m);
     assert.match(result.stdout, /^\[step\] check$/m);
@@ -557,7 +557,7 @@ test("human log: a step header, indented detail under it, and a named next decis
     "providers:\n  claude:\n    command: npx\n    model: test-model\nname: shape\nsteps:\n  - id: prepare\n    run: echo hi\n  - id: verify\n    run: echo ok\n",
   );
   try {
-    const result = runCli([yamlPath, "--cwd", dir, "--trace", "off"]);
+    const result = runCli(["run", yamlPath, "--cwd", dir, "--trace", "off"]);
     assert.equal(result.status, 0);
     assert.match(result.stdout, /^\[step\] prepare$/m);
     assert.match(result.stdout, /^\[step\] verify$/m);

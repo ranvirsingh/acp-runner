@@ -16,7 +16,7 @@ From the repository root, with Bun 1.4.0+ and dependencies installed:
 ```sh
 work=$(mktemp -d)
 cp -R examples/hello-world "$work/workflow"
-bun run start -- "$work/workflow" --cwd "$work/workflow" --trace file
+bun run start -- run "$work/workflow" --cwd "$work/workflow" --trace file
 cat "$work/workflow/release-notes.md"
 ```
 
