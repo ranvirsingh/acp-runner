@@ -48,7 +48,8 @@ Each step sends its `do` prompt to its `provider`. Then the step runs its `run` 
 
 ## Requirements
 
-- [Bun](https://bun.sh) 1.4 or later. Node 20 or later also works.
+- [Node](https://nodejs.org) 20 or later. The `acp-runner` command runs on Node.
+- [Bun](https://bun.sh) 1.4 or later, to build from source.
 - The agent CLIs that your workflow names, installed and logged in on this machine. For example, `claude` and `codex login`.
 - `npx`, if a provider starts through `npx`, as in the example.
 

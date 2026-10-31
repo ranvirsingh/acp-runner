@@ -182,6 +182,7 @@ steps:
 - **Script step:** only `run`. It uses no model. Exit code 0 goes to `on.success`. Any other exit code goes to `on.failure`. Use it to prepare, build, test or clean the workspace.
 - **Prompt step:** `do` and `provider`. It sends the prompt to the provider.
 - **Prompt step with a check:** `do`, `provider` and `run`. The prompt runs first. Then the check runs, and its exit code sets the next step.
+- **Paths in `run`:** the command runs in the workspace. If a word of the command is the path of a file in the agent folder, the runner uses that file. For example, `sh verify.sh` runs `<agent folder>/verify.sh`. `"$RUNBOOK_DIR/verify.sh"` gives the same result.
 - **Variables in scripts:** each var of the step is an environment variable of the `run` command. `RUNBOOK_DIR` contains the path of the agent folder. Do not use a var name that is also a system variable, for example `PATH` or `HOME`.
 - **Time limit:** a `run` command stops after 5 minutes. Set `timeout` in milliseconds to change this.
 
