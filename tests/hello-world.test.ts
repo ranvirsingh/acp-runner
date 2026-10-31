@@ -87,7 +87,15 @@ test("hello-world: release checks require the shipped issue hand-off and correct
   }
 });
 
-test("hello-world: a missing release file stops the run, and the input gate rejects empty and unknown releases", () => {
+test("hello-world: the gate steps fetch no MCP resource", async () => {
+  const config = loadConfig({ yamlPath: join(example, "agent.yaml"), cwd: example, trace: "off" });
+  for (const id of ["check-inputs", "verify"]) {
+    const step = config.runbook.steps.find((candidate) => candidate.id === id)!;
+    assert.deepEqual(await collectStepInputs(config, step, null), {});
+  }
+});
+
+test("hello-world: the input gate reports a missing release file and rejects empty and unknown releases", () => {
   const cwd = mkdtempSync(join(tmpdir(), "release input "));
   cpSync(example, cwd, { recursive: true });
   try {
@@ -95,7 +103,9 @@ test("hello-world: a missing release file stops the run, and the input gate reje
     const check = config.runbook.steps.find((step) => step.id === "check-inputs");
     assert.ok(check);
     rmSync(join(cwd, "release.txt"));
-    assert.throws(() => runStepCheck(config, check), /var RELEASE_VERSION: cannot read release\.txt/);
+    const missing = runStepCheck(config, check);
+    assert.equal(missing.outcome, "failure");
+    assert.match(missing.output ?? "", /release\.txt/);
     for (const release of ["", "  \n", "9.9.9\n"]) {
       writeFileSync(join(cwd, "release.txt"), release);
       assert.equal(runStepCheck(config, check).outcome, "failure");

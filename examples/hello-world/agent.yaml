@@ -15,8 +15,6 @@ mcpServers:
     args: [tools/release.mjs]
 vars:
   PRODUCT_NAME: Taskboard
-  RELEASE_VERSION: { file: release.txt }
-  RELEASE_NOTES_STYLE: { resource: "mem://release-style", mcpServer: issue_tracker }
 steps:
   - id: check-inputs
     mcpServers: []
@@ -29,6 +27,8 @@ steps:
     provider: claude
     mcpServers:
       issue_tracker: { allow: [list_issues] }
+    vars:
+      RELEASE_VERSION: { file: release.txt }
     do: |
       Prepare release notes for {{PRODUCT_NAME}} version {{RELEASE_VERSION}}.
       Call the issue_tracker server's list_issues tool with the trimmed release version.
@@ -41,10 +41,16 @@ steps:
   - id: draft
     provider: claude
     mcpServers: []
+    vars:
+      RELEASE_VERSION: { file: release.txt }
+      RELEASE_NOTES_STYLE: { resource: "mem://release-style", mcpServer: issue_tracker }
     do: { file: templates/draft.md }
   - id: review
     provider: codex
     mcpServers: []
+    vars:
+      RELEASE_VERSION: { file: release.txt }
+      RELEASE_NOTES_STYLE: { resource: "mem://release-style", mcpServer: issue_tracker }
     do: { file: templates/review.md }
   - id: verify
     mcpServers: []
