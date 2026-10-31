@@ -4,8 +4,8 @@ function nested(name: string, message: string): string {
   return `  ${`[${name}]`.padEnd(TAG_WIDTH)} ${message}`;
 }
 
-export function stepLog(step: string, provider: string): void {
-  console.log(`[step] ${step} (${provider})`);
+export function stepLog(step: string, provider?: string): void {
+  console.log(provider ? `[step] ${step} (${provider})` : `[step] ${step}`);
 }
 
 export function stateLog(from: string, to: string): void {

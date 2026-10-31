@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { decideAfterError, decideAfterSuccess } from "./decide.js";
+import { decideAfterSuccess } from "./decide.js";
 import { collectStepInputs } from "../mcp/inputs.js";
 import { McpProxy } from "../mcp/proxy.js";
 import { providerSpec } from "./providers.js";
@@ -23,7 +23,6 @@ import { renderPromptTemplate, resolveStepVariables } from "../config/vars.js";
 import {
   resolveMcpServers,
   resolveModel,
-  resolveProvider,
   resolveStepPrompt,
   resolveStepScope,
   resolveStepServers,
@@ -56,9 +55,7 @@ export function runStepCheck(
   if (signal?.aborted) {
     return { outcome: "failure", output: "aborted", exitCode: null };
   }
-  const defaultTimeout = process.env.ACP_RUNNER_STEP_TIMEOUT
-    ? Number(process.env.ACP_RUNNER_STEP_TIMEOUT)
-    : 300000;
+  const defaultTimeout = 300000;
   const commandTimeout =
     typeof rawCommand === "object" && rawCommand !== null && "timeout" in rawCommand && typeof (rawCommand as any).timeout === "number"
       ? (rawCommand as any).timeout
@@ -158,7 +155,7 @@ function applyCheckResult(context: SessionContext, step: AgentStep, result: Retu
 
 function initialContext(config: RunnerConfig): SessionContext {
   const first = config.runbook.steps[0];
-  const provider = resolveProvider(config, first);
+  const provider = first.provider;
   const model = resolveModel(config, first);
   const prompt = resolveStepPrompt(config, first);
   const mcpServers = resolveStepServers(config, first);
@@ -171,10 +168,7 @@ function initialContext(config: RunnerConfig): SessionContext {
     turnIndex: 0,
     stepIndex: 0,
     sessionId: null,
-    triedProviders: [],
     pendingPermission: null,
-    fallback: config.runbook.providers?.fallback ?? ["claude", "codex", "gemini"],
-    onSpawnError: config.runbook.providers?.onSpawnError ?? "swap",
     mcpServers,
     model,
     shutdownIntent: null,
@@ -230,12 +224,16 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
   }
 
   const ensureSession = async (
-    targetProvider: ProviderId,
-    targetModel?: string,
+    targetProvider: ProviderId | undefined,
     targetServers = context.mcpServers,
   ): Promise<boolean> => {
+    if (!targetProvider) {
+      context.lastError = "no provider: set provider on the step";
+      context.stepOutcome = "failure";
+      return false;
+    }
     const currentSession: AcpSession | null = session;
-    if (currentSession && !currentSession.needsSwap(targetProvider, targetModel)) {
+    if (currentSession && !currentSession.needsSwap(targetProvider)) {
       context.mcpServers = targetServers;
       return true;
     }
@@ -247,16 +245,12 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     }
 
     transitionTo("spawning");
-    if (!context.triedProviders.includes(targetProvider)) {
-      context.triedProviders.push(targetProvider);
-    }
     context.provider = targetProvider;
-    context.model = targetModel;
     context.mcpServers = targetServers;
 
     try {
-      const spec = providerSpec(targetProvider, config.runbook.providers?.agentHarness, { cwd: config.cwd });
-      context.model = targetModel ?? spec.model;
+      const spec = providerSpec(targetProvider, config.runbook.providers);
+      context.model = spec.model;
       session = await AcpSession.spawn(spec, {
         cwd: config.cwd,
         model: context.model,
@@ -308,17 +302,17 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       context.failure = undefined;
       context.stepExitCode = null;
 
-      let stepInputs: { vars: Record<string, string>; body?: string } = { vars: {} };
+      let inputVars: Record<string, string> = {};
       let inputsFailed = false;
       try {
         if (proxy) {
           await proxy.setScope(resolveStepScope(config, currentStep), currentStep.id);
         }
-        stepInputs = await collectStepInputs(config, currentStep, proxy);
+        inputVars = await collectStepInputs(config, currentStep, proxy);
       } catch (inputError: any) {
         inputsFailed = true;
         setFailure(context, {
-          stepId: currentStep.id, kind: "input", source: currentStep.promptRef?.name ?? "step inputs",
+          stepId: currentStep.id, kind: "input", source: "step inputs",
           exitCode: null, output: inputError instanceof Error ? inputError.message : String(inputError),
         });
         transitionTo("choosingNext");
@@ -327,27 +321,18 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       if (inputsFailed) {
       } else if (isScriptStep(currentStep)) {
         transitionTo("executingScript");
-        const checkResult = runStepCheck(config, currentStep, stepInputs.vars, signal);
+        const checkResult = runStepCheck(config, currentStep, inputVars, signal);
         applyCheckResult(context, currentStep, checkResult);
         transitionTo("choosingNext");
       } else {
-        const ok = await ensureSession(
-          context.provider,
-          context.model,
-          context.mcpServers,
-        );
+        const ok = await ensureSession(context.provider, context.mcpServers);
         if (!ok) {
           transitionTo("choosingNext");
         } else {
           transitionTo("inSession");
           context.turnText = "";
           try {
-            const prompt = resolveStepPrompt(
-              config,
-              currentStep,
-              stepInputs.vars,
-              stepInputs.body !== undefined ? { body: stepInputs.body } : undefined,
-            );
+            const prompt = resolveStepPrompt(config, currentStep, inputVars);
             transitionTo("working");
             const reply = await session!.prompt(buildPrompt(prompt, context.pendingFailure));
             context.pendingFailure = undefined;
@@ -355,7 +340,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
             context.turnIndex += 1;
 
             if (currentStep.run) {
-              const checkResult = runStepCheck(config, currentStep, stepInputs.vars, signal);
+              const checkResult = runStepCheck(config, currentStep, inputVars, signal);
               applyCheckResult(context, currentStep, checkResult);
             } else {
               context.stepOutcome = "success";
@@ -375,16 +360,10 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       }
 
       if (context.lastError) {
-        const next = aborted
-          ? { decision: "fail" as const, lastError: context.lastError, why: null, target: null }
-          : decideAfterError(context);
-        context.decision = next.decision;
-        context.why = next.why ?? null;
-        context.decisionTarget = next.target ?? null;
-        if (next.provider) context.provider = next.provider;
-        context.model = next.model;
-        context.shutdownIntent = next.decision === "swap" ? "swap" : "fail";
-        if (next.lastError) context.lastError = next.lastError;
+        context.decision = "fail";
+        context.why = null;
+        context.decisionTarget = null;
+        context.shutdownIntent = "fail";
       } else {
         const evaluatedContext = {
           ...context,

@@ -1,21 +1,23 @@
 name: CHANGEME
 description: "Brief summary of what this agent does and when to run it"
-provider: claude
-model: claude-sonnet-5
 providers:
-  fallback: [claude, codex, gemini]
-  onSpawnError: swap
+  claude:
+    command: npx
+    args: ["-y", "@agentclientprotocol/claude-agent-acp"]
+    model: claude-sonnet-5
 
 vars:
   standard: every exported function has a test and passes verification
 
 steps:
   - id: implement
+    provider: claude
     do: |
       CHANGEME: state the work this step must produce, and the files it must
       leave behind for the steps after it.
 
   - id: review
+    provider: claude
     do: |
       Review the work against this standard: {{standard}}.
       Fix what fails it. Change nothing else.
@@ -35,6 +37,7 @@ steps:
       success: FAIL
 
   - id: report
+    provider: claude
     do: |
       The gate passed. In under ten lines, summarize what changed and what proves it.
     on:

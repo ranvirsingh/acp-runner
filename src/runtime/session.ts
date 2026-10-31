@@ -179,6 +179,15 @@ async function applyModel(
   }
 }
 
+function offeredModels(session: NewSessionResponse): Array<{ value: string; name?: string }> {
+  const modelOption = session.configOptions?.find((option) => {
+    const category = String(option.category ?? option.id ?? option.name).toLowerCase();
+    return category.includes("model");
+  });
+  if (!modelOption || modelOption.type !== "select") return [];
+  return flattenSelectValues(modelOption.options);
+}
+
 function extractInitialModel(session: NewSessionResponse): string | undefined {
   const modelOption = session.configOptions?.find((option) => {
     const category = String(option.category ?? option.id ?? option.name).toLowerCase();
@@ -252,6 +261,7 @@ export class AcpSession {
   private _sessionId: string | null = null;
   private _registeredMcpServers: acp.McpServer[] = [];
   private _effectiveModel?: string;
+  private _offeredModels: Array<{ value: string; name?: string }> = [];
   private turnText = "";
   private readonly toolNames = new Map<string, string>();
   private readonly acpLog: (message: string) => void;
@@ -274,6 +284,10 @@ export class AcpSession {
 
   get effectiveModel(): string | undefined {
     return this._effectiveModel;
+  }
+
+  get offeredModels(): Array<{ value: string; name?: string }> {
+    return this._offeredModels;
   }
 
   get registeredMcpServers(): acp.McpServer[] {
@@ -320,6 +334,7 @@ export class AcpSession {
     let stderrBuffer = "";
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
+      if (this.closing) return;
       const { lines, rest } = splitLines(stderrBuffer + chunk);
       stderrBuffer = rest;
       for (const line of lines) {
@@ -414,19 +429,21 @@ export class AcpSession {
       const mcpServers = await this.buildMcpEntries(initialized.agentCapabilities?.mcpCapabilities);
       this._registeredMcpServers = mcpServers;
 
-      const newSession: NewSessionRequest = { cwd: this.options.cwd, mcpServers };
+      const newSession: NewSessionRequest = {
+        cwd: this.options.cwd,
+        mcpServers,
+        _meta: { claudeCode: { options: { strictMcpConfig: true } } },
+      };
       let session: NewSessionResponse;
       try {
         session = await live.agent.request(acp.methods.agent.session.new, newSession);
       } catch (error) {
-        const authMethods = initialized.authMethods ?? [];
-        if (!(error instanceof acp.RequestError) || error.code !== -32000 || authMethods.length === 0) throw error;
-        const preferred = authMethods.find((m) => m.id === "gemini-api-key") ?? authMethods[0];
-        this.acpLog(`authenticate ${preferred.id}`);
-        await live.agent.request(acp.methods.agent.authenticate, { methodId: preferred.id });
-        session = await live.agent.request(acp.methods.agent.session.new, newSession);
+        if (!(error instanceof acp.RequestError) || error.code !== -32000) throw error;
+        const methods = (initialized.authMethods ?? []).map((m) => m.id).join(", ");
+        throw new Error(`${this.provider.id} needs a login (${methods}); sign in with its own CLI first`);
       }
       this._sessionId = session.sessionId;
+      this._offeredModels = offeredModels(session);
       this.acpLog(`session ${session.sessionId} (${mcpServers.length} mcp)`);
 
       if (this.options.model) {
@@ -564,11 +581,8 @@ export class AcpSession {
     });
   }
 
-  needsSwap(targetProvider: ProviderId, targetModel?: string): boolean {
-    return needsNewBody(
-      { provider: this.provider.id, model: this.options.model },
-      { provider: targetProvider, model: targetModel },
-    );
+  needsSwap(targetProvider: ProviderId): boolean {
+    return needsNewBody({ provider: this.provider.id }, { provider: targetProvider });
   }
 
   async close(): Promise<void> {

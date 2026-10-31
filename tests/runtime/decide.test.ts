@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decideAfterError, decideAfterSuccess, nextFallback } from "../../src/runtime/decide.ts";
+import { decideAfterSuccess } from "../../src/runtime/decide.ts";
 import type { AgentYaml, RunnerConfig, SessionContext } from "../../src/types.ts";
 
 function contextFor(overrides: Partial<SessionContext> = {}): SessionContext {
@@ -12,10 +12,7 @@ function contextFor(overrides: Partial<SessionContext> = {}): SessionContext {
     turnIndex: 0,
     stepIndex: 0,
     sessionId: null,
-    triedProviders: [],
     pendingPermission: null,
-    fallback: ["claude", "gemini", "codex"],
-    onSpawnError: "swap",
     mcpServers: [],
     model: undefined,
     shutdownIntent: null,
@@ -28,73 +25,11 @@ function contextFor(overrides: Partial<SessionContext> = {}): SessionContext {
 }
 
 function configFor(runbook: AgentYaml): RunnerConfig {
-  return { yamlPath: "agent.yaml", cwd: "/tmp/project", runbook };
-}
-
-test("nextFallback: first provider that has not been tried", () => {
-  assert.equal(nextFallback(contextFor({ triedProviders: ["claude"] })), "gemini");
-  assert.equal(nextFallback(contextFor({ triedProviders: ["claude", "gemini"] })), "codex");
-});
-
-test("nextFallback: undefined once every fallback has been tried", () => {
-  assert.equal(
-    nextFallback(contextFor({ triedProviders: ["codex", "claude", "gemini"] })),
-    undefined,
+  const steps = runbook.steps.map((step) =>
+    step.provider || (step.do === undefined && !step.do) ? step : { ...step, provider: "claude" },
   );
-});
-
-test("nextFallback: undefined when the fallback list is empty", () => {
-  assert.equal(nextFallback(contextFor({ fallback: [] })), undefined);
-});
-
-test("decideAfterError: onSpawnError fail stops immediately and keeps the error", () => {
-  const context = contextFor({ onSpawnError: "fail", lastError: "agent exited (1)" });
-  assert.deepEqual(decideAfterError(context), {
-    decision: "fail",
-    lastError: "agent exited (1)",
-    why: null,
-    target: null,
-  });
-});
-
-test("decideAfterError: swaps to the next untried fallback body", () => {
-  const context = contextFor({ triedProviders: ["claude"], lastError: "spawn failed" });
-  assert.deepEqual(decideAfterError(context), {
-    decision: "swap",
-    provider: "gemini",
-    model: undefined,
-    why: null,
-    target: null,
-  });
-});
-
-test("decideAfterError: does not carry the old model onto the fallback body", () => {
-  const context = contextFor({
-    provider: "gemini",
-    model: "composer",
-    triedProviders: ["gemini"],
-    lastError: "spawn failed",
-  });
-  assert.equal(decideAfterError(context).model, undefined);
-});
-
-test("decideAfterError: fails once the fallback list is exhausted", () => {
-  const context = contextFor({ triedProviders: ["claude", "gemini", "codex"] });
-  assert.deepEqual(decideAfterError(context), {
-    decision: "fail",
-    lastError: "no fallback providers left",
-    why: null,
-    target: null,
-  });
-});
-
-test("decideAfterError: keeps the original error when the fallback list runs out", () => {
-  const context = contextFor({
-    triedProviders: ["claude", "gemini", "codex"],
-    lastError: "auth/session failed",
-  });
-  assert.equal(decideAfterError(context).lastError, "auth/session failed");
-});
+  return { yamlPath: "agent.yaml", cwd: "/tmp/project", runbook: { ...runbook, steps } };
+}
 
 test("decideAfterSuccess: finishes after the last step", () => {
   const config = configFor({ steps: [{ id: "only", do: "Ship it" }] });
@@ -143,17 +78,6 @@ test("decideAfterSuccess: swaps when the next step names a different provider", 
   assert.equal(result.prompt, "Review");
 });
 
-test("decideAfterSuccess: swaps when the next step names a different model", () => {
-  const config = configFor({
-    steps: [{ id: "implement", do: "Ship it" }, { id: "harden", model: "opus", do: "Review" }],
-  });
-  const result = decideAfterSuccess(contextFor({ model: "sonnet" }), config);
-
-  assert.equal(result.decision, "swap");
-  assert.equal(result.provider, "claude");
-  assert.equal(result.model, "opus");
-});
-
 test("decideAfterSuccess: a swap carries the next step's own prompt", () => {
   const config = configFor({
     steps: [{ id: "implement", do: "Implement it" }, { id: "harden", provider: "gemini", do: "Harden it" }],
@@ -163,18 +87,15 @@ test("decideAfterSuccess: a swap carries the next step's own prompt", () => {
   assert.equal(result.prompt, "Harden it");
 });
 
-test("decideAfterSuccess: the next step inherits provider and model when it names none", () => {
+test("decideAfterSuccess: a script step stays on the live session", () => {
   const config = configFor({
-    steps: [{ id: "implement", do: "Ship it" }, { id: "verify", do: "Check" }],
+    steps: [{ id: "implement", do: "Ship it" }, { id: "verify", run: "true" }],
   });
-  const result = decideAfterSuccess(
-    contextFor({ provider: "codex", model: "gpt-5" }),
-    config,
-  );
+  const result = decideAfterSuccess(contextFor({ provider: "claude", model: "sonnet" }), config);
 
   assert.equal(result.decision, "stay");
-  assert.equal(result.provider, "codex");
-  assert.equal(result.model, "gpt-5");
+  assert.equal(result.provider, "claude");
+  assert.equal(result.model, "sonnet");
 });
 
 test("decideAfterSuccess: walks the agenda one step at a time", () => {
@@ -485,12 +406,6 @@ test("decideAfterSuccess: reports why=maxAttempts when max attempts fails the ru
   );
   assert.equal(result.why, "maxAttempts");
   assert.equal(result.target, null);
-});
-
-test("decideAfterError: reports why=null when switching provider", () => {
-  const context = contextFor({ triedProviders: ["claude"], lastError: "spawn failed" });
-  const result = decideAfterError(context);
-  assert.equal(result.why, null);
 });
 
 test("decideAfterSuccess: loops back to current step on failure when step.retry is defined", () => {

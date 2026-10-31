@@ -1,5 +1,4 @@
 import type { AgentStep, RunnerConfig } from "../types.js";
-import { renderPromptTemplate, resolveStepVariables } from "./vars.js";
 import {
   loadAgentYaml,
   resolveMcpServers,
@@ -24,15 +23,9 @@ function problemsOf(check: () => unknown): string[] {
 }
 
 function lintStep(config: RunnerConfig, step: AgentStep): string[] {
-  const promptArguments = Object.entries(step.promptRef?.arguments ?? {}).flatMap(([key, value]) =>
-    problemsOf(() =>
-      renderPromptTemplate(value, resolveStepVariables(config, step, undefined, true), true),
-    ).map((problem) => `step ${step.id}: promptRef.arguments.${key}: ${problem}`),
-  );
   return [
     ...problemsOf(() => resolveStepPrompt(config, step, undefined, stub)),
     ...problemsOf(() => resolveStepCommand(config, step, step.run, undefined, stub)),
-    ...promptArguments,
   ];
 }
 

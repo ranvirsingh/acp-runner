@@ -104,16 +104,12 @@ test("McpProxy: a call to an unknown tool is refused, not routed", async () => {
   await proxy.close();
 });
 
-test("McpProxy: reads a resource and flattens a prompt", async () => {
+test("McpProxy: reads a resource", async () => {
   const fixture = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/mcp-catalogue.mjs");
   const proxy = new McpProxy([
     { type: "stdio", name: "cat", command: process.execPath, args: [fixture], env: [] },
   ]);
   assert.equal(await proxy.readResource("cat", "mem://schema"), "id integer");
-  assert.equal(
-    await proxy.getPrompt("cat", "review", { service: "checkout" }),
-    "review checkout\n\nbe brief",
-  );
   await assert.rejects(() => proxy.readResource("cat", "mem://blob"), /blob/);
   await assert.rejects(() => proxy.readResource("cat", "mem://huge"), /256/);
   await proxy.close();

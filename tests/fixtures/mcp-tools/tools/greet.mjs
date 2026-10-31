@@ -36,7 +36,7 @@ function handle(method, params) {
   if (method === "initialize") {
     return {
       protocolVersion: params?.protocolVersion ?? "2024-11-05",
-      capabilities: { tools: {}, resources: {}, prompts: {} },
+      capabilities: { tools: {}, resources: {} },
       serverInfo: { name: "mcp-tools-greet", version: "0.1.0" },
     };
   }
@@ -59,25 +59,7 @@ function handle(method, params) {
     }
     return { contents: [{ uri: params.uri, mimeType: "text/plain", text: HOUSE_STYLE }] };
   }
-  if (method === "prompts/list") {
-    return { prompts: [{ name: "critique", arguments: [{ name: "subject" }] }] };
-  }
-  if (method === "prompts/get") {
-    if (params?.name !== "critique") {
-      throw new Error(`unknown prompt ${params?.name}`);
-    }
-    return {
-      messages: [
-        {
-          role: "user",
-          content: {
-            type: "text",
-            text: `Critique the ${params?.arguments?.subject} you produced. One line only.`,
-          },
-        },
-      ],
-    };
-  }
+
   throw new Error(`unknown method ${method}`);
 }
 

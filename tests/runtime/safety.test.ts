@@ -8,7 +8,7 @@ import type { ProviderSpec } from "../../src/runtime/providers.ts";
 const fixturePath = join(fileURLToPath(import.meta.url), "../../fixtures/acp-child.ts");
 
 function fixtureSpec(overrides: Partial<ProviderSpec> = {}): ProviderSpec {
-  return { id: "claude", command: "bun", args: [fixturePath], ...overrides };
+  return { id: "claude", command: "bun", args: [fixturePath], model: "test-model", ...overrides };
 }
 
 test("pickRejectOption: selects reject option when present", () => {

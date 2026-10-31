@@ -8,7 +8,7 @@ import { runAgent, runStepCheck } from "../../src/runtime/engine.ts";
 import type { AgentYaml, RunnerConfig, SessionContext } from "../../src/types.ts";
 
 const fixturePath = join(fileURLToPath(import.meta.url), "../../fixtures/acp-child.ts");
-const fixtureProvider = { command: "bun", args: [fixturePath] };
+const fixtureProvider = { command: "bun", args: [fixturePath], model: "test-model" };
 
 function configFor(runbook: AgentYaml): RunnerConfig {
   return {
@@ -16,10 +16,10 @@ function configFor(runbook: AgentYaml): RunnerConfig {
     cwd: "/tmp/project",
     runbook: {
       ...runbook,
-      providers: {
-        ...runbook.providers,
-        agentHarness: { claude: fixtureProvider, ...runbook.providers?.agentHarness },
-      },
+      providers: { claude: fixtureProvider, ...runbook.providers },
+      steps: runbook.steps.map((step) =>
+        step.provider || (step.do === undefined && !step.do) ? step : { ...step, provider: "claude" },
+      ),
     },
   };
 }
@@ -38,9 +38,15 @@ test("runAgent: executes script-only agent to completion", async () => {
   assert.ok(transitions.some((t) => t.next === "finished"));
 });
 
-test("runAgent: the default fallback is claude, codex, gemini", async () => {
-  const result = await runAgent({ config: configFor({ steps: [{ id: "one", run: "true" }] }) });
-  assert.deepEqual(result.context.fallback, ["claude", "codex", "gemini"]);
+test("runAgent: a model step with no provider fails the run instead of picking one", async () => {
+  const config: RunnerConfig = {
+    yamlPath: "agent.yaml",
+    cwd: "/tmp/project",
+    runbook: { providers: { claude: fixtureProvider }, steps: [{ id: "one", do: "Ship it" }] },
+  };
+  const result = await runAgent({ config });
+  assert.equal(result.outcome, "failed");
+  assert.match(result.context.lastError ?? "", /no provider/);
 });
 
 test("runAgent: multi-step script agent executes sequentially", async () => {
@@ -169,34 +175,10 @@ test("runAgent: post-turn run failure triggers retry on model step", async () =>
   }
 });
 
-test("runAgent: spawn failure swaps to fallback provider", async () => {
+test("runAgent: a harness that fails to start fails the run, even with another harness declared", async () => {
   const config = configFor({
-    providers: {
-      agentHarness: { failing: { command: "no-such-binary-9999" } },
-      fallback: ["failing", "claude"],
-      onSpawnError: "swap",
-    },
-    steps: [{ id: "step1", provider: "failing", do: "Say hello" }],
-  });
-
-  const result = await runAgent({ config });
-  assert.equal(result.outcome, "finished");
-  assert.equal(result.context.provider, "claude");
-  assert.ok(result.context.triedProviders.includes("failing"));
-  assert.ok(result.context.triedProviders.includes("claude"));
-});
-
-test("runAgent: all fallbacks exhausted fails the run", async () => {
-  const config = configFor({
-    providers: {
-      agentHarness: {
-        fail1: { command: "no-such-binary-1111" },
-        fail2: { command: "no-such-binary-2222" },
-      },
-      fallback: ["fail1", "fail2"],
-      onSpawnError: "swap",
-    },
-    steps: [{ id: "step1", provider: "fail1", do: "Say hello" }],
+    providers: { broken: { command: "no-such-binary-1111", model: "test-model" } },
+    steps: [{ id: "step1", provider: "broken", do: "Say hello" }],
   });
 
   const result = await runAgent({ config });
@@ -226,14 +208,12 @@ test("runAgent: two steps with different tool scopes share one session", async (
   try {
     const config = configFor({
       providers: {
-        agentHarness: {
-          claude: { command: "sh", args: ["-c", `echo x >> ${spawnLog}; exec bun ${fixturePath}`] },
-        },
-        mcpServers: { greet: { command: "node", args: [greetTool] } },
+        claude: { command: "sh", args: ["-c", `echo x >> ${spawnLog}; exec bun ${fixturePath}`], model: "test-model" },
       },
+      mcpServers: { greet: { command: "node", args: [greetTool] } },
       steps: [
-        { id: "one", do: "first", servers: { greet: { allow: ["greet"] } } },
-        { id: "two", do: "second", servers: [] },
+        { id: "one", do: "first", mcpServers: { greet: { allow: ["greet"] } } },
+        { id: "two", do: "second", mcpServers: [] },
       ],
     });
     const result = await runAgent({ config });
@@ -246,12 +226,12 @@ test("runAgent: two steps with different tool scopes share one session", async (
 
 test("runAgent: a step renders a resource variable fetched through the proxy", async () => {
   const config = configFor({
-    providers: { mcpServers: { cat: { command: process.execPath, args: [catalogueTool] } } },
+    mcpServers: { cat: { command: process.execPath, args: [catalogueTool] } },
     steps: [
       {
         id: "one",
         do: "ddl is {{schema_ddl}}",
-        vars: { schema_ddl: { resource: "mem://schema", server: "cat" } },
+        vars: { schema_ddl: { resource: "mem://schema", mcpServer: "cat" } },
       },
     ],
   });
@@ -260,30 +240,36 @@ test("runAgent: a step renders a resource variable fetched through the proxy", a
   assert.equal(result.context.turnText, "echo:ddl is id integer");
 });
 
-test("runAgent: a promptRef step takes its body from the server prompt catalogue", async () => {
+test("runAgent: a step scalar overrides a runbook resource variable of the same name", async () => {
   const config = configFor({
-    vars: { service: "checkout" },
-    providers: { mcpServers: { cat: { command: process.execPath, args: [catalogueTool] } } },
-    steps: [
-      {
-        id: "one",
-        promptRef: { server: "cat", name: "review", arguments: { service: "{{service}}" } },
-      },
-    ],
+    vars: { schema_ddl: { resource: "mem://schema", mcpServer: "cat" } },
+    mcpServers: { cat: { command: process.execPath, args: [catalogueTool] } },
+    steps: [{ id: "one", do: "ddl is {{schema_ddl}}", vars: { schema_ddl: "name text" } }],
   });
   const result = await runAgent({ config });
   assert.equal(result.outcome, "finished");
-  assert.equal(result.context.turnText, "echo:review checkout\n\nbe brief");
+  assert.equal(result.context.turnText, "echo:ddl is name text");
+});
+
+test("runAgent: a runbook resource shadowed by a step scalar is never fetched", async () => {
+  const config = configFor({
+    vars: { schema_ddl: { resource: "mem://absent", mcpServer: "cat" } },
+    mcpServers: { cat: { command: process.execPath, args: [catalogueTool] } },
+    steps: [{ id: "one", do: "ddl is {{schema_ddl}}", vars: { schema_ddl: "name text" } }],
+  });
+  const result = await runAgent({ config });
+  assert.equal(result.outcome, "finished");
+  assert.equal(result.context.turnText, "echo:ddl is name text");
 });
 
 test("runAgent: a missing resource fails the step", async () => {
   const config = configFor({
-    providers: { mcpServers: { cat: { command: process.execPath, args: [catalogueTool] } } },
+    mcpServers: { cat: { command: process.execPath, args: [catalogueTool] } },
     steps: [
       {
         id: "one",
         do: "ddl is {{schema_ddl}}",
-        vars: { schema_ddl: { resource: "mem://absent", server: "cat" } },
+        vars: { schema_ddl: { resource: "mem://absent", mcpServer: "cat" } },
       },
     ],
   });
@@ -329,25 +315,21 @@ test("runAgent: abort still ends the run when the agent ignores cancel", async (
   }
 });
 
-test("runStepCheck: respects step-level and env timeout", () => {
+test("runStepCheck: a run timeout bounds the command", () => {
   const config = configFor({ steps: [] });
-  const slowCommand = "node -e 'setTimeout(() => {}, 500)'";
-
-  // Step run timeout overrides default
-  const result1 = runStepCheck(config, {
+  const result = runStepCheck(config, {
     id: "check",
-    run: { command: slowCommand, timeout: 50 },
+    run: { command: "node -e 'setTimeout(() => {}, 500)'", timeout: 50 },
   });
-  assert.equal(result1.outcome, "failure");
+  assert.equal(result.outcome, "failure");
+});
 
-  // ACP_RUNNER_STEP_TIMEOUT env overrides default
+test("runStepCheck: ACP_RUNNER_STEP_TIMEOUT does not change the default", () => {
+  const config = configFor({ steps: [] });
   process.env.ACP_RUNNER_STEP_TIMEOUT = "50";
   try {
-    const result2 = runStepCheck(config, {
-      id: "check",
-      run: slowCommand,
-    });
-    assert.equal(result2.outcome, "failure");
+    const result = runStepCheck(config, { id: "check", run: "node -e 'setTimeout(() => {}, 500)'" });
+    assert.equal(result.outcome, "success");
   } finally {
     delete process.env.ACP_RUNNER_STEP_TIMEOUT;
   }

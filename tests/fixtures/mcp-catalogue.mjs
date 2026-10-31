@@ -13,7 +13,7 @@ function handle(method, params) {
     clientVersion = params?.clientInfo?.version ?? "";
     return {
       protocolVersion: params?.protocolVersion ?? "2024-11-05",
-      capabilities: { tools: {}, resources: {}, prompts: {} },
+      capabilities: { tools: {}, resources: {} },
       serverInfo: { name: "mcp-catalogue", version: "0.1.0" },
     };
   }
@@ -32,24 +32,7 @@ function handle(method, params) {
     }
     return { contents: [{ uri: params.uri, mimeType: "text/plain", text: found.text }] };
   }
-  if (method === "prompts/list") {
-    return { prompts: [{ name: "review", arguments: [{ name: "service" }] }] };
-  }
-  if (method === "prompts/get") {
-    if (params?.name === "image") {
-      return {
-        messages: [
-          { role: "user", content: { type: "image", data: "AAA", mimeType: "image/png" } },
-        ],
-      };
-    }
-    return {
-      messages: [
-        { role: "user", content: { type: "text", text: `review ${params?.arguments?.service}` } },
-        { role: "user", content: { type: "text", text: "be brief" } },
-      ],
-    };
-  }
+
   throw new Error(`unknown method ${method}`);
 }
 

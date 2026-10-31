@@ -8,33 +8,6 @@ import type {
 import { needsNewBody, resolveModel, resolveStepPrompt, resolveStepServers } from "../config/yaml.js";
 import type { RunnerConfig } from "../types.js";
 
-export function nextFallback(context: SessionContext): ProviderId | undefined {
-  return context.fallback.find((provider) => !context.triedProviders.includes(provider));
-}
-
-export function decideAfterError(context: SessionContext): {
-  decision: NextDecision;
-  provider?: ProviderId;
-  model?: string;
-  lastError?: string;
-  why?: TransitionWhy;
-  target?: string | null;
-} {
-  if (context.onSpawnError === "fail") {
-    return { decision: "fail", lastError: context.lastError, why: null, target: null };
-  }
-  const provider = nextFallback(context);
-  if (!provider) {
-    return {
-      decision: "fail",
-      lastError: context.lastError ?? "no fallback providers left",
-      why: null,
-      target: null,
-    };
-  }
-  return { decision: "swap", provider, model: undefined, why: null, target: null };
-}
-
 export function isTerminalEnd(target?: string): boolean {
   return typeof target === "string" && target.trim().toLowerCase() === "end";
 }
@@ -49,7 +22,7 @@ export function decideAfterSuccess(
 ): {
   decision: NextDecision;
   stepIndex: number;
-  provider: ProviderId;
+  provider?: ProviderId;
   model?: string;
   prompt: string;
   mcpServers: ResolvedMcpServer[];
@@ -197,14 +170,10 @@ export function decideAfterSuccess(
 
   const nextRaw = rawSteps[nextIndex];
   const provider = nextRaw.provider ?? context.provider;
-  const model = resolveModel(config, { ...nextRaw, provider })
-    ?? (provider === context.provider ? context.model : undefined);
+  const model = nextRaw.provider ? resolveModel(config, nextRaw) : context.model;
   const rendered = resolveStepPrompt(config, nextRaw);
   const mcpServers = resolveStepServers(config, nextRaw);
-  const swap = needsNewBody(
-    { provider: context.provider, model: context.model },
-    { provider, model },
-  );
+  const swap = needsNewBody({ provider: context.provider }, { provider });
 
   return {
     decision: swap ? "swap" : "stay",

@@ -15,8 +15,14 @@ import {
 } from "../src/index.ts";
 import { runCli } from "./helpers/run-cli.ts";
 
-test("cli: no arguments looks for ./agent.yaml and reports it missing", () => {
+test("cli: no arguments prints the usage and exits non-zero", () => {
   const result = runCli([]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /usage: acp-runner run/);
+});
+
+test("cli: run with no path looks for ./agent.yaml and reports it missing", () => {
+  const result = runCli(["run"]);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /agent\.yaml/);
 });
@@ -31,13 +37,13 @@ test("cli: --version prints the package version and exits zero", () => {
 test("cli: an unsupported provider is rejected before anything is spawned", () => {
   const dir = mkdtempSync(join(tmpdir(), "acp-index-"));
   const path = join(dir, "agent.yaml");
-  writeFileSync(path, "name: demo\nsteps:\n  - id: implement\n    do: Ship it\n");
+  writeFileSync(path, "providers:\n  writer:\n    command: npx\n    model: test-model\nname: demo\nsteps:\n  - id: implement\n    provider: unsupported\n    do: Ship it\n");
   try {
-    const result = runCli([path, "--provider", "unsupported"]);
+    const result = runCli(["run", path]);
     assert.equal(result.status, 1);
     assert.match(
       result.stderr,
-      /unknown provider "unsupported" \(known: claude, codex, gemini\)/,
+      /unknown provider "unsupported" \(known: writer\)/,
     );
     assert.doesNotMatch(result.stdout, /\[acp\] spawn/);
   } finally {
@@ -46,7 +52,7 @@ test("cli: an unsupported provider is rejected before anything is spawned", () =
 });
 
 test("cli: an unknown flag is rejected", () => {
-  const result = runCli(["--verbose"]);
+  const result = runCli(["run", "--verbose"]);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /unknown flag --verbose/);
 });
@@ -56,7 +62,7 @@ test("cli: a runbook with an empty step list is rejected", () => {
   const path = join(dir, "empty.yaml");
   writeFileSync(path, "name: empty\nsteps: []\n");
   try {
-    const result = runCli([path, "--cwd", dir]);
+    const result = runCli(["run", path, "--cwd", dir]);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /steps: Array must contain at least 1 element/);
   } finally {
@@ -65,7 +71,7 @@ test("cli: a runbook with an empty step list is rejected", () => {
 });
 
 test("cli: a missing runbook is reported by path", () => {
-  const result = runCli(["no-such-runbook.yaml"]);
+  const result = runCli(["run", "no-such-runbook.yaml"]);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /no-such-runbook\.yaml/);
 });

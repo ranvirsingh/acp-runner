@@ -1,6 +1,6 @@
 {
   "name": "acp-runner",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "type": "module",
   "description": "Local runner for multi-step agent runbooks (agent.yaml) over the Agent Client Protocol",
   "license": "MIT",
@@ -29,7 +29,6 @@
   },
   "files": [
     "dist",
-    "examples/hello-world",
     "LICENSE",
     "README.md"
   ],

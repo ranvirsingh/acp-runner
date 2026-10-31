@@ -16,16 +16,17 @@ From the repository root, with Bun 1.4.0+ and dependencies installed:
 ```sh
 work=$(mktemp -d)
 cp -R examples/hello-world "$work/workflow"
-bun run start -- "$work/workflow" --cwd "$work/workflow" --trace file
+bun run start -- run "$work/workflow" --cwd "$work/workflow" --trace file
 cat "$work/workflow/release-notes.md"
 ```
 
-Or use the npm archive without Bun (replace the archive path):
+Or use the npm archive without Bun. The package does not ship examples, so copy this
+folder from a checkout of the repository (replace both paths):
 
 ```sh
 work=$(mktemp -d)
-npm install --prefix "$work" /absolute/path/acp-runner-0.1.0-beta.2.tgz
-cp -R "$work/node_modules/acp-runner/examples/hello-world" "$work/workflow"
+npm install --prefix "$work" /absolute/path/acp-runner-0.1.0-beta.3.tgz
+cp -R /absolute/path/acp-runner/examples/hello-world "$work/workflow"
 "$work/node_modules/.bin/acp-runner" "$work/workflow" --cwd "$work/workflow" --trace file
 cat "$work/workflow/release-notes.md"
 ```
@@ -42,36 +43,35 @@ check-inputs → collect → draft → review → verify → END
 ```
 
 1. **Check inputs:** `scripts/check-inputs.sh` checks the release before any model turn.
-2. **Collect:** the writer calls MCP `list_issues` and saves shipped records to `issues.json`.
-3. **Draft:** the writer uses `templates/draft.md` and the MCP style resource to write the notes.
-4. **Review:** the reviewer uses the MCP `review_release` prompt and edits the notes.
+2. **Collect:** `claude` calls the `issue_tracker` server's `list_issues` tool and saves shipped records to `issues.json`.
+3. **Draft:** `claude` uses `templates/draft.md` and `RELEASE_NOTES_STYLE` to write the notes.
+4. **Review:** `codex` uses `templates/review.md` and `RELEASE_NOTES_STYLE`, and edits the notes.
 5. **Verify:** `scripts/check.sh` checks records, headings, and issue coverage. Failure
    returns to collection with feedback, at most twice, then stops with `FAIL`.
 
 Collection and drafting share a session. Switching agents starts a fresh session;
 files carry the work between them. The shell gates check structure and issue
-references; the reviewer checks the prose.
+references; `codex` checks the prose.
 
-`scripts/` contains the deterministic gates, `templates/` contains the drafting
-prompt, and `tools/` contains the Node MCP server and sample data. Only collection
-exposes the MCP tool to the agent; the runner fetches resources and prompts itself.
-Step tool scopes control runbook MCP tools, not the harness's own tools.
+`scripts/` contains the deterministic gates, `templates/` contains the drafting and
+review prompts, and `tools/` contains the Node MCP server and sample data. Only collection
+exposes the MCP tool to the agent; the runner fetches `RELEASE_NOTES_STYLE` from `issue_tracker` itself.
+Step tool scopes control runbook MCP tools, not the harness's own tools. Claude sees only the runbook's servers; Codex still loads the MCP servers from your own Codex config.
 
 ## Choose different ACP agents
 
-Edit `command`, `args`, and `model` under `providers.agentHarness` in `agent.yaml`:
+Edit `command`, `args`, and `model` under `providers` in `agent.yaml`:
 
-- `writer`: `@agentclientprotocol/claude-agent-acp`, model `claude-sonnet-5`.
-- `reviewer`: `@agentclientprotocol/codex-acp@1.13.1`, model `gpt-6-luna`.
+- `claude`: `@agentclientprotocol/claude-agent-acp`, model `claude-sonnet-5`.
+- `codex`: `@agentclientprotocol/codex-acp@2.5.0`, model `gpt-6-luna`.
 
 The Codex adapter is pinned so `npx` does not reuse an older installed adapter
 that lacks the requested model.
 
-Models are selected through ACP. A step's `model` overrides its harness's model.
-With only a Claude login, copy the writer's command, args, and model into the
-reviewer declaration. The roles still get separate sessions. CLI `--provider`
-does not override these explicit step selections; `onSpawnError: fail` stops if
-an adapter cannot start.
+Models are selected through ACP, and each harness must name its model. With only
+a Claude login, copy the `claude` command, args, and model into the `codex`
+declaration. The two steps still get separate sessions. If an adapter cannot start,
+the run stops.
 
 ## Permissions
 

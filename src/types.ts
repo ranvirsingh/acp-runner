@@ -1,7 +1,5 @@
 export type ProviderId = string;
 
-export type OnSpawnError = "swap" | "fail";
-
 export type NextDecision = "stay" | "swap" | "finish" | "fail";
 
 export interface StepTransitionConfig {
@@ -22,12 +20,6 @@ export interface ToolScope {
   deny?: string[];
 }
 
-export interface PromptRef {
-  server: string;
-  name: string;
-  arguments?: Record<string, string>;
-}
-
 export type StepServers = string[] | Record<string, ToolScope>;
 
 export type StepCommand = string | { command: string; args?: string[]; timeout?: number };
@@ -35,10 +27,8 @@ export type StepCommand = string | { command: string; args?: string[]; timeout?:
 export interface AgentStep {
   id: string;
   do?: string | { file: string };
-  promptRef?: PromptRef;
   provider?: ProviderId;
-  model?: string;
-  servers?: StepServers;
+  mcpServers?: StepServers;
   vars?: Record<string, unknown>;
   run?: StepCommand;
   timeout?: number;
@@ -88,29 +78,16 @@ export function isStdioServer(server: ResolvedMcpServer): server is ResolvedStdi
 export interface AgentYaml {
   name?: string;
   description?: string;
-  provider?: ProviderId;
-  model?: string;
+  providers?: Record<string, ProviderDeclaration>;
+  mcpServers?: Record<string, McpServerSpec>;
   vars?: Record<string, unknown>;
-  providers?: AgentProviders;
   steps: AgentStep[];
-}
-
-export interface SpawnCommand {
-  command: string;
-  args: string[];
 }
 
 export interface ProviderDeclaration {
   command: string;
   args?: string[];
-  model?: string;
-}
-
-export interface AgentProviders {
-  agentHarness?: Record<string, ProviderDeclaration>;
-  mcpServers?: Record<string, McpServerSpec>;
-  fallback?: ProviderId[];
-  onSpawnError?: OnSpawnError;
+  model: string;
 }
 
 export type TransitionWhy =
@@ -121,7 +98,7 @@ export type TransitionWhy =
   | "maxAttempts"
   | null;
 
-export type SwapReason = "provider" | "model" | "servers" | "spawn_error";
+export type SwapReason = "provider";
 
 export interface RunStartEvent {
   ts: string;
@@ -131,7 +108,7 @@ export interface RunStartEvent {
   agent: string | null;
   cwd: string;
   yaml: string;
-  provider: string;
+  provider: string | null;
   model: string | null;
   steps: string[];
 }
@@ -144,7 +121,7 @@ export interface StepStartEvent {
   index: number;
   kind: "model" | "script";
   attempt: number;
-  provider: string;
+  provider: string | null;
   model: string | null;
   servers: string[];
 }
@@ -187,8 +164,8 @@ export interface SwapEvent {
   ts: string;
   run: string;
   ev: "swap";
-  from_provider: string;
-  to_provider: string;
+  from_provider: string | null;
+  to_provider: string | null;
   from_model: string | null;
   to_model: string | null;
   reason: SwapReason;
@@ -233,7 +210,6 @@ export function tracesToFile(mode: TraceMode = "stdout"): boolean {
 export interface RunnerConfig {
   yamlPath: string;
   cwd: string;
-  providerOverride?: ProviderId;
   runbook: AgentYaml;
   trace?: TraceMode;
   confirm?: boolean;
@@ -253,17 +229,14 @@ export interface StepFailure {
 }
 
 export interface SessionContext {
-  provider: ProviderId;
+  provider?: ProviderId;
   cwd: string;
   prompt: string;
   turnText: string;
   turnIndex: number;
   stepIndex: number;
   sessionId: string | null;
-  triedProviders: ProviderId[];
   pendingPermission: PermissionPending | null;
-  fallback: ProviderId[];
-  onSpawnError: OnSpawnError;
   mcpServers: ResolvedMcpServer[];
   model?: string;
   effectiveModel?: string;
@@ -283,3 +256,4 @@ export function isScriptStep(step?: AgentStep): boolean {
   if (!step) return false;
   return Boolean(step.run && !step.do);
 }
+
