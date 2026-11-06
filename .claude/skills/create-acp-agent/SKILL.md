@@ -86,8 +86,8 @@ Goal: "Review open GitHub pull requests and update the Jira issue"
        command: node
        args: [tools/jira-server.mjs]
        env:
-         JIRA_API_TOKEN: "{{env.JIRA_API_TOKEN}}"
-         JIRA_URL: "{{env.JIRA_URL}}"
+         JIRA_API_TOKEN: "${{ secrets.JIRA_API_TOKEN }}"
+         JIRA_URL: "${{ env.JIRA_URL }}"
    ```
 
    For a remote server, use `type: http` or `type: sse` with `url` and `headers`.
@@ -221,7 +221,7 @@ mcpServers:
     command: node
     args: [tools/server.mjs]
     env:
-      API_KEY: "{{env.CUSTOM_API_KEY}}"
+      API_KEY: "${{ secrets.CUSTOM_API_KEY }}"
 vars:
   TEST_COMMAND: npm test
 steps:
@@ -352,12 +352,15 @@ Write the purpose, the run command, the environment variables, the MCP servers a
 | --- | --- | --- |
 | Text | `TONE: formal` | The text is the value. |
 | File | `SCHEMA: { file: schemas/out.json }` | The path is relative to the agent folder. |
-| Environment | `BRANCH: { env: GIT_BRANCH }` | The environment variable must exist. |
 | MCP resource | `STYLE: { resource: "mem://style", mcpServer: notes }` | The runner reads the resource before the step. The limit is 256 KiB of text. |
 
-- `{{NAME}}` reads a var. `{{env.NAME}}` reads an environment variable.
+- `{{NAME}}` reads a var. Vars contain only values of the workflow. Do not put an environment variable in `vars`.
+- `${{ env.NAME }}` reads an environment variable. `${{ secrets.NAME }}` reads a secret from the environment. Write the placeholder where the value is used.
+- The runner redacts each `${{ secrets.NAME }}` value in logs, plans and traces. Use `secrets` for each token, key and password. Lint reports an `${{ env.NAME }}` that has a credential name.
+- Before the first step, the runner stops if an `${{ env.NAME }}` is not set, or if a `${{ secrets.NAME }}` is not set or empty. `plan` shows these values under `external`.
+- Agents, local MCP servers and `run` commands get the full environment. Use a placeholder only when the runner must put the value into text.
 - A placeholder that has no value is an error. Lint finds it before the run.
-- The runner reads top-level `{ file }`, `{ env }` and `{ resource }` vars for each step. Declare such a var on the steps that use it. Then a step that does not use it cannot fail because of it.
+- The runner reads top-level `{ file }` and `{ resource }` vars for each step. Declare such a var on the steps that use it. Then a step that does not use it cannot fail because of it.
 - Do not write `{{feedback}}`. The runner attaches failure output automatically, and lint rejects this placeholder.
 
 ## 7. The four-stage test loop
@@ -475,7 +478,7 @@ Do a maximum of 3 fix cycles. If the agent still fails, stop. Show the scores, t
 | A loop with no limit | The loop can use tokens without end. | Set `maxAttempts` and `fallback` on each loop. |
 | Unnecessary swaps | Each swap loses the session history. | Use fewer swaps. Make each prompt after a swap complete. |
 | Prompt changes without data | Random changes do not find the cause. | Read the run record to find the failed step or tool. |
-| Secrets in prompts | `{{env.KEY}}` in a prompt sends the key to the model. | Put secrets in `mcpServers.<name>.env`. |
+| Secrets in prompts | `${{ secrets.KEY }}` in a prompt sends the key to the model. Lint reports it. | Put secrets in MCP `headers` or `mcpServers.<name>.env`. |
 | Paths relative to the workspace in the runbook | The agent fails when the workspace changes. | Make runbook paths relative to the agent folder. Use `--cwd` only for the workspace. |
 | Step id `end` or `fail` | The runner reserves these names. | Use names such as `report` or `alert_failure`. |
 | Very large steps | You cannot find which part failed. | Make a new step when the type of work changes or when a separate check applies. |

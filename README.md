@@ -111,7 +111,7 @@ A folder argument means the `agent.yaml` in that folder. With no argument, the c
 | --- | --- |
 | `providers.<name>` | An ACP agent: `command`, `args` and a required `model`. Steps refer to it by name. |
 | `mcpServers.<name>` | An MCP server (stdio, `http` or `sse`) that steps can use. |
-| `vars` | Values for `{{NAME}}` placeholders. A value can be text, `{ file }`, `{ env }` or `{ resource, mcpServer }`. |
+| `vars` | Values that the workflow owns, for `{{NAME}}` placeholders. A value can be text, `{ file }` or `{ resource, mcpServer }`. Values from the environment do not go here. |
 | `steps[].do` | The prompt, inline or `{ file: path }`. |
 | `steps[].provider` | The agent that runs the prompt. Required when the step has `do`. |
 | `steps[].run` | A shell command. On its own, the step is a script step. After `do`, it is the check. |
@@ -128,7 +128,20 @@ mcpServers:
   issue_tracker: { allow: ["list_*"], deny: [delete_issue] }
 ```
 
-**Placeholders.** `{{NAME}}` reads `vars`. `{{env.NAME}}` reads an environment variable. A placeholder that has no value is an error.
+**Placeholders.** There are two kinds:
+
+- `{{NAME}}` reads a value from `vars`.
+- `${{ env.NAME }}` and `${{ secrets.NAME }}` read an environment variable. Write them where the value is used, for example in an MCP header. The environment that starts the run supplies the value, for example GitHub Actions `env`, `vars` or `secrets`.
+
+The runner redacts the value of each `${{ secrets.NAME }}` in logs, plans and run traces. An empty secret is an error.
+
+Before the first step, `run` and `check` find every `${{ env.NAME }}` and `${{ secrets.NAME }}` in the prompts, the `run` commands and the MCP servers. If one is missing, they stop and name all missing values. `plan` lists these values under `external`.
+
+Do not put a secret in a prompt, because the prompt goes to the model. `lint` reports a secret in a prompt. `lint` also reports an `${{ env.NAME }}` whose name looks like a credential.
+
+Agents, local MCP servers and shell steps also inherit the full environment. Use a placeholder only where the runner must put the value into the text.
+
+A placeholder that has no value is an error.
 
 **Repair loops.** `on.failure` can go back to an earlier step. `maxAttempts` limits the loop, and `fallback` sets the next step after the last attempt:
 
@@ -146,7 +159,7 @@ mcpServers:
   jira:
     type: sse
     url: https://mcp.example.com/jira/sse
-    headers: { Authorization: "Bearer {{env.JIRA_TOKEN}}" }
+    headers: { Authorization: "Bearer ${{ secrets.JIRA_TOKEN }}" }
 ```
 
 **Run records.** `--trace file` writes one JSON event for each line to `<cwd>/.runner/run-<id>.jsonl`.
@@ -168,7 +181,7 @@ A step's `mcpServers` setting limits only the servers that the runbook adds. The
 
 The MCP proxy listens only on `127.0.0.1`. Each proxy uses a random authentication token. Requests require this token, the expected host and the `/mcp` path. The proxy rejects requests with an `Origin` header. The runner passes the token to the agent through ACP.
 
-Logs, plans and run traces redact known credential values of at least four characters. These values come from credential-named environment variables, MCP headers and credential-named workflow variables. Variables that explicitly reference an environment variable also register its value for redaction. Redaction cannot detect every secret or its encoded forms. Review output before you share it. New trace directories use mode `0700`, and new trace files use mode `0600`.
+Logs, plans and run traces redact known credential values of at least four characters. These values come from `${{ secrets.NAME }}` placeholders, credential-named environment variables, MCP headers and credential-named workflow variables. Redaction cannot detect every secret or its encoded forms. Review output before you share it. New trace directories use mode `0700`, and new trace files use mode `0600`.
 
 ## Write agents with Claude Code
 
