@@ -20,6 +20,7 @@ import {
   type StepCommand,
 } from "../types.js";
 import { renderPromptTemplate, resolveStepVariables } from "../config/vars.js";
+import { createRedactor } from "../output/redact.js";
 import {
   resolveMcpServers,
   resolveModel,
@@ -258,6 +259,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
         quiet: tracesToStdout(config.trace),
         signal,
         confirm: config.confirm,
+        redact: createRedactor(config, proxy?.authHeaders.map((header) => header.value) ?? []),
         promptPermission: options.promptPermission,
         onUpdate: (_chunk, update) => {
           inspect?.({

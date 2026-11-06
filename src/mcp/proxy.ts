@@ -1,5 +1,5 @@
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -22,6 +22,7 @@ export const RESOURCE_LIMIT_BYTES = 256 * 1024;
 const RUNNER_ENTRY_NAME = "runner";
 
 export class McpProxy {
+  private readonly httpToken = randomBytes(32).toString("hex");
   private readonly declared = new Map<string, ResolvedMcpServer>();
   private readonly clients = new Map<string, Client>();
   private readonly catalogue = new Map<string, Tool[]>();
@@ -38,6 +39,10 @@ export class McpProxy {
 
   get entryName(): string {
     return RUNNER_ENTRY_NAME;
+  }
+
+  get authHeaders(): Array<{ name: string; value: string }> {
+    return [{ name: "Authorization", value: `Bearer ${this.httpToken}` }];
   }
 
   get serverNames(): string[] {
@@ -180,10 +185,30 @@ export class McpProxy {
     }
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const server = createHttpServer((req, res) => {
+      const expected = Buffer.from(`Bearer ${this.httpToken}`);
+      const provided = Buffer.from(req.headers.authorization ?? "");
+      if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+        res.writeHead(401).end();
+        return;
+      }
+      const address = server.address();
+      if (req.headers.origin !== undefined || !address || typeof address !== "object"
+        || req.headers.host !== `127.0.0.1:${address.port}`) {
+        res.writeHead(403).end();
+        return;
+      }
+      if (req.url !== "/mcp") {
+        res.writeHead(404).end();
+        return;
+      }
+      const handleError = () => {
+        if (!res.headersSent) res.writeHead(500).end();
+        else res.destroy();
+      };
       const sessionId = req.headers["mcp-session-id"];
       const existing = typeof sessionId === "string" ? transports.get(sessionId) : undefined;
       if (existing) {
-        void existing.handleRequest(req, res);
+        void existing.handleRequest(req, res).catch(handleError);
         return;
       }
       if (req.method !== "POST") {
@@ -191,6 +216,7 @@ export class McpProxy {
         return;
       }
       const transport = new StreamableHTTPServerTransport({
+        maxRequestBodySize: 1024 * 1024,
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
           transports.set(id, transport);
@@ -199,7 +225,12 @@ export class McpProxy {
           transports.delete(id);
         },
       });
-      void this.connectEndpoint(transport).then(() => transport.handleRequest(req, res));
+      void this.connectEndpoint(transport)
+        .then(() => transport.handleRequest(req, res))
+        .catch(handleError)
+        .finally(() => {
+          if (!transport.sessionId) void transport.close().catch(() => {});
+        });
     });
     this.httpServer = server;
     await new Promise<void>((resolve, reject) => {

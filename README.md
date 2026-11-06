@@ -55,7 +55,20 @@ Each step sends its `do` prompt to its `provider`. Then the step runs its `run` 
 
 ## Install
 
-The package is not on npm yet. Install it from source:
+Install the beta from npm:
+
+```bash
+npm install -g acp-runner@beta
+acp-runner --version
+```
+
+Or run it without a global install:
+
+```bash
+npx acp-runner@beta --help
+```
+
+The examples below are in this repository. To get the examples and build from source:
 
 ```bash
 git clone https://github.com/ranvirsingh/acp-runner.git
@@ -147,7 +160,15 @@ mcpServers:
 
 ## Security
 
-Run only workflows and MCP servers that you trust. Shell steps run directly on your machine. By default, the runner approves every permission request from an agent. Use `--confirm` to approve each request yourself. A step's `mcpServers` setting limits only the servers that the runbook adds. It is not a sandbox: an agent keeps its own built-in tools, and Codex also loads its own MCP servers.
+Run only workflows, providers and MCP servers that you trust. Shell steps run directly on your machine. Child agents and local MCP servers inherit your environment, which can contain credentials.
+
+By default, the runner approves recognized allow options from an agent. Use `--confirm` to review agent permission requests and runner-handled file writes. The runner cancels requests when it cannot select a valid option. Without an interactive terminal, the CLI rejects permission requests. Shell steps and runner-handled file reads do not require confirmation. File access is not restricted to `--cwd`.
+
+A step's `mcpServers` setting limits only the servers that the runbook adds. The proxy enforces these limits for each tool call. An agent keeps its own built-in tools, and Codex also loads its own MCP servers. These controls do not provide a sandbox.
+
+The MCP proxy listens only on `127.0.0.1`. Each proxy uses a random authentication token. Requests require this token, the expected host and the `/mcp` path. The proxy rejects requests with an `Origin` header. The runner passes the token to the agent through ACP.
+
+Logs, plans and run traces redact known credential values of at least four characters. These values come from credential-named environment variables, MCP headers and credential-named workflow variables. Variables that explicitly reference an environment variable also register its value for redaction. Redaction cannot detect every secret or its encoded forms. Review output before you share it. New trace directories use mode `0700`, and new trace files use mode `0600`.
 
 ## Write agents with Claude Code
 

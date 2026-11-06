@@ -1,4 +1,5 @@
 import type { AgentStep, RunnerConfig, StepTransition } from "../types.js";
+import { createRedactor } from "../output/redact.js";
 import {
   loadAgentYaml,
   resolveModel,
@@ -74,7 +75,7 @@ export function planRunbook(path: string): string {
   const config: RunnerConfig = { yamlPath, cwd: process.cwd(), runbook: loadAgentYaml(yamlPath) };
   const { name, description, steps } = config.runbook;
   const title = [name ?? "agent", description].filter(Boolean).join(": ");
-  return [title, ...steps.flatMap((step, index) => ["", ...planStep(config, step, index)])].join("\n");
+  return createRedactor(config)([title, ...steps.flatMap((step, index) => ["", ...planStep(config, step, index)])].join("\n"));
 }
 
 export function planCommand(target: string): number {

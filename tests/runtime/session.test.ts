@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpSession } from "../../src/runtime/session.ts";
+import { McpProxy } from "../../src/mcp/proxy.ts";
 import type { ProviderSpec } from "../../src/runtime/providers.ts";
 
 const fixturePath = join(fileURLToPath(import.meta.url), "../../fixtures/acp-child.ts");
@@ -16,6 +17,25 @@ function fixtureSpec(overrides: Partial<ProviderSpec> = {}): ProviderSpec {
 function fixtureEnv(mode = "ok"): Record<string, string> {
   return { ACP_FIXTURE_MODE: mode };
 }
+
+test("AcpSession: an ACP child calls an authenticated HTTP proxy using the supplied headers", async () => {
+  const proxy = new McpProxy([{
+    type: "stdio", name: "greet", command: "node",
+    args: [fileURLToPath(new URL("../fixtures/mcp-tools/tools/greet.mjs", import.meta.url))], env: [],
+  }]);
+  let session: AcpSession | undefined;
+  try {
+    await proxy.setScope({ greet: {} }, "one");
+    session = await AcpSession.spawn(fixtureSpec(), {
+      cwd: "/tmp", env: fixtureEnv("mcp-http"), quiet: true, proxy,
+    });
+    assert.equal(await session.prompt([{ type: "text", text: "greet" }]),
+      JSON.stringify([{ type: "text", text: "Hello npm" }]));
+  } finally {
+    await session?.close();
+    await proxy.close();
+  }
+});
 
 test("AcpSession: uses the saved login when the adapter also advertises API-key authentication", async () => {
   const session = await AcpSession.spawn(fixtureSpec({ id: "reviewer" }), {
@@ -123,12 +143,13 @@ test("AcpSession: a proxy uses http when the agent reports the capability", asyn
     quiet: true,
     proxy: {
       entryName: "runner",
+      authHeaders: [{ name: "Authorization", value: "Bearer test-token" }],
       listenHttp: async () => "http://127.0.0.1:4242/mcp",
     },
   });
 
   assert.deepEqual(session.registeredMcpServers, [
-    { type: "http", name: "runner", url: "http://127.0.0.1:4242/mcp", headers: [] },
+    { type: "http", name: "runner", url: "http://127.0.0.1:4242/mcp", headers: [{ name: "Authorization", value: "Bearer test-token" }] },
   ]);
 
   await session.close();

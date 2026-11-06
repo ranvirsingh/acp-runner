@@ -48,6 +48,7 @@ const stream = acp.ndJsonStream(
 );
 
 let sessionId = "sess_fixture";
+let mcpServers: acp.McpServer[] = [];
 let authenticated = false;
 let releaseTurn: (() => void) | null = null;
 
@@ -78,6 +79,7 @@ const app = acp
     return {};
   })
   .onRequest(acp.methods.agent.session.new, async (ctx) => {
+    mcpServers = ctx.params.mcpServers;
     if (mode === "auth" && !authenticated) throw acp.RequestError.authRequired();
     if (mode === "exit-before-turn") {
       process.exit(13);
@@ -139,11 +141,28 @@ const app = acp
 
     const promptText = ctx.params.prompt.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n\n");
 
-    const reply = mode === "unicode"
+    let reply = mode === "unicode"
       ? "café 🎉 日本語"
       : mode === "large"
         ? "x".repeat(256 * 1024)
         : `echo:${promptText}`;
+
+    if (mode === "mcp-http") {
+      const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+      const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+      const server = mcpServers.find((server) => "type" in server && server.type === "http");
+      if (!server || !("url" in server)) throw new Error("fixture needs an HTTP MCP server");
+      const client = new Client({ name: "fixture", version: "0.0.0" });
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url), {
+          requestInit: { headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])) },
+        }));
+        const result = await client.callTool({ name: "greet__greet", arguments: { name: "npm" } });
+        reply = JSON.stringify(result.content);
+      } finally {
+        await client.close();
+      }
+    }
 
     if (mode === "permission") {
       await ctx.client.request(acp.methods.client.session.requestPermission, {
