@@ -22,7 +22,15 @@ const varSource = z.union([
   z.number(),
   z.boolean(),
   z.null(),
-  z.object({ env: z.string().min(1) }).strict(),
+  z
+    .object({ env: z.string().min(1) })
+    .strict()
+    .superRefine((source, ctx) => {
+      ctx.addIssue({
+        code: "custom",
+        message: "vars hold workflow values; write ${{ env." + source.env + " }} or ${{ secrets." + source.env + " }} where the value is used",
+      });
+    }),
   fileSource,
   resourceSource,
 ]);
@@ -238,6 +246,8 @@ function describeIssue(issue: z.ZodIssue): string {
     return `Array must contain at least ${issue.minimum} element(s)`;
   }
   if (issue.code !== z.ZodIssueCode.invalid_union) return issue.message;
+  const explained = issue.errors.flat().find((inner) => inner.code === "custom");
+  if (explained) return explained.message;
   const branches = issue.errors.map((issues) =>
     issues
       .map((inner) => {

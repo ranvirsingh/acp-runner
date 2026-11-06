@@ -13,15 +13,7 @@ function resolveVarValue(
 ): string {
   if (value == null) return "";
   if (typeof value === "object") {
-    const source = value as { env?: unknown; file?: unknown };
-    if (typeof source.env === "string") {
-      const found = process.env[source.env];
-      if (found === undefined) {
-        if (stubMissing) return "";
-        throw new Error(`var ${key}: environment variable ${source.env} is not set`);
-      }
-      return found;
-    }
+    const source = value as { file?: unknown };
     if (typeof (value as { resource?: unknown }).resource === "string") {
       return "";
     }
@@ -38,7 +30,7 @@ function resolveVarValue(
         throw new Error(`var ${key}: cannot read ${source.file}`);
       }
     }
-    throw new Error(`var ${key}: expected a scalar, { env }, { file } or { resource }`);
+    throw new Error(`var ${key}: expected a scalar, { file } or { resource }`);
   }
   return String(value);
 }
@@ -86,17 +78,25 @@ export function resolveStepVariables(
   );
 }
 
-const TEMPLATE_PATTERN = /(\$)?\${{\s*([\w.-]+)\s*}}|\{\{([\w.]+)\}\}/g;
+export const TEMPLATE_PATTERN = /(\$)?\${{\s*([\w.-]+)\s*}}|\{\{([\w.]+)\}\}/g;
 
 function lookup(
   token: string,
   variables: WorkflowVariables,
   placeholder: string,
   stubEnv: boolean,
+  outside: boolean,
 ): string {
   const dot = token.indexOf(".");
   const namespace = dot === -1 ? "vars" : token.slice(0, dot);
   const key = dot === -1 ? token : token.slice(dot + 1);
+  const fromOutside = namespace === "env" || namespace === "secrets";
+  if (outside && namespace === "vars") {
+    throw new Error(`use {{${key}}} for a workflow var (${placeholder})`);
+  }
+  if (!outside && fromOutside) {
+    throw new Error("use ${{ " + `${namespace}.${key}` + " }} for an outside value (" + placeholder + ")");
+  }
   if (namespace === "vars") {
     if (key === "feedback") {
       throw new Error("Check failures are attached automatically; remove the feedback placeholder.");
@@ -106,11 +106,14 @@ function lookup(
     }
     return variables[key];
   }
-  if (namespace === "env") {
+  if (fromOutside) {
     const value = process.env[key];
     if (value === undefined) {
       if (stubEnv) return "";
       throw new Error(`environment variable ${key} is not set (${placeholder})`);
+    }
+    if (namespace === "secrets" && value === "" && !stubEnv) {
+      throw new Error(`secret ${key} is empty (${placeholder})`);
     }
     return value;
   }
@@ -129,7 +132,7 @@ export function renderPromptTemplate(
         return match.slice(1);
       }
       const token = (acpToken ?? legacyToken)!.trim();
-      return lookup(token, variables, match, stubEnv);
+      return lookup(token, variables, match, stubEnv, acpToken !== undefined);
     },
   );
 }

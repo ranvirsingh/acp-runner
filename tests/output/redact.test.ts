@@ -75,3 +75,21 @@ test("CLI redacts secrets from stdout, stderr, and trace files before truncation
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("redaction covers values referenced as secrets and leaves outside env values alone", () => {
+  process.env.ACP_OPAQUE_VALUE = "opaque-value-123";
+  process.env.ACP_PLAIN_VALUE = "plain-value-456";
+  const config: RunnerConfig = {
+    cwd: "/tmp", yamlPath: "/tmp/agent.yaml",
+    runbook: {
+      mcpServers: { remote: { type: "http", url: "https://example.com", headers: { Authorization: "Bearer ${{ secrets.ACP_OPAQUE_VALUE }}" } } },
+      steps: [{ id: "one", run: "echo ${{ env.ACP_PLAIN_VALUE }}" }],
+    },
+  };
+  try {
+    assert.equal(createRedactor(config)("opaque-value-123 plain-value-456"), "[REDACTED] plain-value-456");
+  } finally {
+    delete process.env.ACP_OPAQUE_VALUE;
+    delete process.env.ACP_PLAIN_VALUE;
+  }
+});

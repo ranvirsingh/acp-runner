@@ -21,6 +21,7 @@ import {
 } from "../types.js";
 import { renderPromptTemplate, resolveStepVariables } from "../config/vars.js";
 import { createRedactor } from "../output/redact.js";
+import { missingExternalValues } from "../config/external.js";
 import {
   resolveMcpServers,
   resolveModel,
@@ -187,6 +188,9 @@ function initialContext(config: RunnerConfig): SessionContext {
 
 export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult> {
   const { config, onStateChange, inspect, signal } = options;
+
+  const missing = missingExternalValues(config);
+  if (missing.length > 0) throw new Error(`missing outside values: ${missing.join("; ")}`);
 
   const context = initialContext(config);
   const declaredServers = resolveMcpServers(config);

@@ -58,7 +58,7 @@ steps:
     provider: claude
     do: { file: prompt.md }
   - id: shell
-    run: "echo \${{ feedback }}"
+    run: "echo {{feedback}}"
   - id: argv
     run: { command: node, args: ["{{vars.feedback}}"] }
 `,
@@ -127,7 +127,7 @@ test("lint: an mcp server whose environment variable is unset still lints", () =
   withFiles(
     {
       "agent.yaml":
-        "providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  gcp-usage:\n    command: python\n    env:\n      KEY: \"{{env.ACP_LINT_ABSENT}}\"\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n",
+        "providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  gcp-usage:\n    command: python\n    env:\n      KEY: \"${{ env.ACP_LINT_ABSENT }}\"\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n",
     },
     (dir) => {
       const result = runLint([dir]);
@@ -136,21 +136,9 @@ test("lint: an mcp server whose environment variable is unset still lints", () =
   );
 });
 
-test("lintRunbook: an env var stays stubbed when mcp servers are declared", () => {
-  withFiles(
-    {
-      "agent.yaml":
-        "providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  db:\n    command: node\nvars:\n  token: { env: ACP_LINT_ABSENT }\nsteps:\n  - id: one\n    provider: claude\n    do: use {{token}}\n",
-    },
-    (dir) => {
-      assert.deepEqual(lintRunbook(dir), []);
-    },
-  );
-});
-
 test("lintRunbook: an unset env placeholder in a prompt is stubbed", () => {
   withFiles(
-    { "agent.yaml": "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: one\n    provider: claude\n    do: use {{env.ACP_LINT_ABSENT}}\n" },
+    { "agent.yaml": "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: one\n    provider: claude\n    do: use ${{ env.ACP_LINT_ABSENT }}\n" },
     (dir) => {
       assert.deepEqual(lintRunbook(dir), []);
     },
@@ -159,7 +147,7 @@ test("lintRunbook: an unset env placeholder in a prompt is stubbed", () => {
 
 test("lintRunbook: an unset env placeholder in a run command is stubbed", () => {
   withFiles(
-    { "agent.yaml": "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: one\n    run: curl -H {{env.ACP_LINT_ABSENT}} x.test\n" },
+    { "agent.yaml": "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: one\n    run: curl -H ${{ env.ACP_LINT_ABSENT }} x.test\n" },
     (dir) => {
       assert.deepEqual(lintRunbook(dir), []);
     },
@@ -230,10 +218,36 @@ test("lintRunbook: a remote server renders its headers", () => {
   withFiles(
     {
       "agent.yaml":
-        'providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  jira:\n    type: sse\n    url: https://x.test/sse\n    headers:\n      Authorization: "Bearer {{env.ACP_TEST_ABSENT_TOKEN}} {{nope}}"\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n',
+        'providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  jira:\n    type: sse\n    url: https://x.test/sse\n    headers:\n      Authorization: "Bearer ${{ secrets.ACP_TEST_ABSENT_TOKEN }} {{nope}}"\nsteps:\n  - id: one\n    provider: claude\n    do: Ship it\n',
     },
     (dir) => {
       assert.deepEqual(lintRunbook(dir), ["mcpServers jira: unknown variable {{nope}}"]);
+    },
+  );
+});
+
+test("lintRunbook: a secret in a prompt is reported, because the prompt goes to the model", () => {
+  withFiles(
+    {
+      "agent.yaml": "providers:\n  claude:\n    command: npx\n    model: test-model\nsteps:\n  - id: inline\n    provider: claude\n    do: use ${{ secrets.ACP_LINT_TOKEN }}\n  - id: file\n    provider: claude\n    do: { file: prompt.md }\n",
+      "prompt.md": "call with ${{ secrets.ACP_LINT_KEY }}",
+    },
+    (dir) => {
+      assert.deepEqual(lintRunbook(dir), [
+        "step inline: ${{ secrets.ACP_LINT_TOKEN }} in a prompt would send the secret to the model",
+        "step file: ${{ secrets.ACP_LINT_KEY }} in a prompt would send the secret to the model",
+      ]);
+    },
+  );
+});
+
+test("lintRunbook: an env value whose name looks like a credential must be read as a secret", () => {
+  withFiles(
+    {
+      "agent.yaml": 'providers:\n  claude:\n    command: npx\n    model: test-model\nmcpServers:\n  tracker:\n    type: http\n    url: https://tracker.test/mcp\n    headers:\n      Authorization: "Bearer ${{ env.TRACKER_TOKEN }}"\nsteps:\n  - id: one\n    provider: claude\n    do: Read ${{ env.ISSUE_URL }}\n',
+    },
+    (dir) => {
+      assert.deepEqual(lintRunbook(dir), ["${{ env.TRACKER_TOKEN }} looks like a credential; use ${{ secrets.TRACKER_TOKEN }}"]);
     },
   );
 });

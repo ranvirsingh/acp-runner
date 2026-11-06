@@ -18,6 +18,19 @@ function withYamlFile(body: string, fn: (path: string) => void): void {
 
 const WRITER = "providers:\n  writer:\n    command: npx\n    args: [\"-y\", \"claude-acp\"]\n    model: sonnet\n";
 
+test("loadAgentYaml: a var cannot read the environment and the error says what to write instead", () => {
+  withYamlFile(`${WRITER}vars:\n  token: { env: GITHUB_TOKEN }\nsteps:\n  - id: one\n    provider: writer\n    do: Ship it\n`, (path) => {
+    assert.throws(
+      () => loadAgentYaml(path),
+      (error: Error) => {
+        assert.match(error.message, /vars\.token: vars hold workflow values; write \$\{\{ env\.GITHUB_TOKEN \}\} or \$\{\{ secrets\.GITHUB_TOKEN \}\} where the value is used/);
+        assert.doesNotMatch(error.message, /no variant matched/);
+        return true;
+      },
+    );
+  });
+});
+
 test("loadAgentYaml: providers maps a name straight to a harness", () => {
   withYamlFile(`${WRITER}steps:\n  - id: one\n    provider: writer\n    do: Ship it\n`, (path) => {
     assert.deepEqual(loadAgentYaml(path).providers, {

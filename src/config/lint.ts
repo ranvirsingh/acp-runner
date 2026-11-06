@@ -1,4 +1,7 @@
+import { dirname } from "node:path";
 import type { AgentStep, RunnerConfig } from "../types.js";
+import { SECRET_NAME } from "../output/redact.js";
+import { promptText, referencesIn, runbookTexts } from "./external.js";
 import {
   loadAgentYaml,
   resolveMcpServers,
@@ -29,6 +32,25 @@ function lintStep(config: RunnerConfig, step: AgentStep): string[] {
   ];
 }
 
+function outsideValueProblems(config: RunnerConfig): string[] {
+  const baseDir = dirname(config.yamlPath);
+  const secretsInPrompts = config.runbook.steps.flatMap((step) =>
+    referencesIn(promptText(step, baseDir))
+      .filter((reference) => reference.namespace === "secrets")
+      .map((reference) => `step ${step.id}: \${{ secrets.${reference.name} }} in a prompt would send the secret to the model`),
+  );
+  const credentialEnv = new Set(
+    runbookTexts(config)
+      .flatMap(referencesIn)
+      .filter((reference) => reference.namespace === "env" && SECRET_NAME.test(reference.name))
+      .map((reference) => reference.name),
+  );
+  return [
+    ...secretsInPrompts,
+    ...[...credentialEnv].map((name) => `\${{ env.${name} }} looks like a credential; use \${{ secrets.${name} }}`),
+  ];
+}
+
 export function lintRunbook(path: string): string[] {
   let config: RunnerConfig;
   try {
@@ -40,6 +62,7 @@ export function lintRunbook(path: string): string[] {
   return [
     ...problemsOf(() => resolveMcpServers(config, true)),
     ...config.runbook.steps.flatMap((step) => lintStep(config, step)),
+    ...outsideValueProblems(config),
   ];
 }
 

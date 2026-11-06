@@ -58,3 +58,22 @@ test("cli: plan reports an invalid runbook and exits non-zero", () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /no-such-runbook\.yaml/);
 });
+
+test("plan: lists the outside values the run needs, secrets apart from env", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-plan-"));
+  const path = join(dir, "agent.yaml");
+  writeFileSync(
+    path,
+    'name: outside\nmcpServers:\n  tracker:\n    type: http\n    url: https://tracker.test/mcp\n    headers:\n      Authorization: "Bearer ${{ secrets.TRACKER_TOKEN }}"\nsteps:\n  - id: gate\n    run: "test -n ${{ env.ISSUE_URL }}"\n',
+  );
+  try {
+    const out = planRunbook(path);
+    assert.match(out, /^outside\n\nexternal\n   secrets   TRACKER_TOKEN\n   env       ISSUE_URL\n\n1\. gate$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("plan: a runbook with no outside values prints no external block", () => {
+  assert.doesNotMatch(planRunbook("examples/riddle"), /^external$/m);
+});
