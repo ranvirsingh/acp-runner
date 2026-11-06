@@ -357,6 +357,7 @@ Write the purpose, the run command, the environment variables, the MCP servers a
 - `{{NAME}}` reads a var. Vars contain only values of the workflow. Do not put an environment variable in `vars`.
 - `${{ env.NAME }}` reads an environment variable. `${{ secrets.NAME }}` reads a secret from the environment. Write the placeholder where the value is used.
 - The runner redacts each `${{ secrets.NAME }}` value in logs, plans and traces. Use `secrets` for each token, key and password. Lint reports an `${{ env.NAME }}` that has a credential name.
+- An agent does not get the environment variables that the runbook reads as `${{ secrets.NAME }}`. The runner removes secret values from prompts and from check output. The MCP proxy refuses a tool call that contains a secret value. Scripts in `run` get the full environment.
 - Before the first step, the runner stops if an `${{ env.NAME }}` is not set, or if a `${{ secrets.NAME }}` is not set or empty. `plan` shows these values under `external`.
 - Agents, local MCP servers and `run` commands get the full environment. Use a placeholder only when the runner must put the value into text.
 - A placeholder that has no value is an error. Lint finds it before the run.
@@ -478,7 +479,7 @@ Do a maximum of 3 fix cycles. If the agent still fails, stop. Show the scores, t
 | A loop with no limit | The loop can use tokens without end. | Set `maxAttempts` and `fallback` on each loop. |
 | Unnecessary swaps | Each swap loses the session history. | Use fewer swaps. Make each prompt after a swap complete. |
 | Prompt changes without data | Random changes do not find the cause. | Read the run record to find the failed step or tool. |
-| Secrets in prompts | `${{ secrets.KEY }}` in a prompt sends the key to the model. Lint reports it. | Put secrets in MCP `headers` or `mcpServers.<name>.env`. |
+| Secrets in prompts | `${{ secrets.KEY }}` in a prompt sends the key to the model. Lint reports it, and `run` stops. | Put secrets in MCP `headers` or `mcpServers.<name>.env`. |
 | Paths relative to the workspace in the runbook | The agent fails when the workspace changes. | Make runbook paths relative to the agent folder. Use `--cwd` only for the workspace. |
 | Step id `end` or `fail` | The runner reserves these names. | Use names such as `report` or `alert_failure`. |
 | Very large steps | You cannot find which part failed. | Make a new step when the type of work changes or when a separate check applies. |
