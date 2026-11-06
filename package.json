@@ -1,6 +1,6 @@
 {
   "name": "acp-runner",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "type": "module",
   "description": "Local runner for multi-step agent runbooks (agent.yaml) over the Agent Client Protocol",
   "license": "MIT",
@@ -18,7 +18,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "acp-runner": "./dist/cli.js"
+    "acp-runner": "dist/cli.js"
   },
   "exports": {
     ".": {

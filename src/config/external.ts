@@ -81,3 +81,12 @@ export function missingExternalValues(
     }),
   ];
 }
+
+export function secretsInPrompts(config: RunnerConfig): string[] {
+  const baseDir = dirname(config.yamlPath);
+  return config.runbook.steps.flatMap((step) =>
+    referencesIn(promptText(step, baseDir))
+      .filter((reference) => reference.namespace === "secrets")
+      .map((reference) => `step ${step.id}: \${{ secrets.${reference.name} }} in a prompt would send the secret to the model`),
+  );
+}

@@ -137,9 +137,9 @@ The runner redacts the value of each `${{ secrets.NAME }}` in logs, plans and ru
 
 Before the first step, `run` and `check` find every `${{ env.NAME }}` and `${{ secrets.NAME }}` in the prompts, the `run` commands and the MCP servers. If one is missing, they stop and name all missing values. `plan` lists these values under `external`.
 
-Do not put a secret in a prompt, because the prompt goes to the model. `lint` reports a secret in a prompt. `lint` also reports an `${{ env.NAME }}` whose name looks like a credential.
+Do not put a secret in a prompt, because the prompt goes to the model. `lint` reports a secret in a prompt, and `run` stops before the first step. `lint` also reports an `${{ env.NAME }}` whose name looks like a credential.
 
-Agents, local MCP servers and shell steps also inherit the full environment. Use a placeholder only where the runner must put the value into the text.
+Shell steps and local MCP servers inherit the full environment. Agents inherit it too, except the variables that the runbook reads as `${{ secrets.NAME }}`. Use a placeholder only where the runner must put the value into the text.
 
 A placeholder that has no value is an error.
 
@@ -173,13 +173,21 @@ mcpServers:
 
 ## Security
 
-Run only workflows, providers and MCP servers that you trust. Shell steps run directly on your machine. Child agents and local MCP servers inherit your environment, which can contain credentials.
+Run only workflows, providers and MCP servers that you trust. Shell steps run directly on your machine. Shell steps and local MCP servers inherit your environment, which can contain credentials.
 
 By default, the runner approves recognized allow options from an agent. Use `--confirm` to review agent permission requests and runner-handled file writes. The runner cancels requests when it cannot select a valid option. Without an interactive terminal, the CLI rejects permission requests. Shell steps and runner-handled file reads do not require confirmation. File access is not restricted to `--cwd`.
 
 A step's `mcpServers` setting limits only the servers that the runbook adds. The proxy enforces these limits for each tool call. An agent keeps its own built-in tools, and Codex also loads its own MCP servers. These controls do not provide a sandbox.
 
 The MCP proxy listens only on `127.0.0.1`. Each proxy uses a random authentication token. Requests require this token, the expected host and the `/mcp` path. The proxy rejects requests with an `Origin` header. The runner passes the token to the agent through ACP.
+
+Secrets that the runbook reads as `${{ secrets.NAME }}` are kept away from the agents:
+
+- An agent process does not get these environment variables. The runner puts the values into MCP headers and MCP server `env` itself. The agent keeps its own login, for example `CLAUDE_CODE_OAUTH_TOKEN`.
+- Before the runner sends a prompt, it replaces each known secret value in the prompt text and in the attached check output with `[REDACTED]`.
+- The MCP proxy refuses a tool call when the arguments contain a known secret value. The runner logs the tool name, but not the value.
+
+These controls do not stop an agent that finds a secret another way, for example in a file or through a built-in tool that does not use the proxy. They also do not detect encoded or partial forms of a secret.
 
 Logs, plans and run traces redact known credential values of at least four characters. These values come from `${{ secrets.NAME }}` placeholders, credential-named environment variables, MCP headers and credential-named workflow variables. Redaction cannot detect every secret or its encoded forms. Review output before you share it. New trace directories use mode `0700`, and new trace files use mode `0600`.
 

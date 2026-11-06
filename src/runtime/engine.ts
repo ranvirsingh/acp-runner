@@ -20,8 +20,8 @@ import {
   type StepCommand,
 } from "../types.js";
 import { renderPromptTemplate, resolveStepVariables } from "../config/vars.js";
-import { createRedactor } from "../output/redact.js";
-import { missingExternalValues } from "../config/external.js";
+import { createRedactor, secretValues } from "../output/redact.js";
+import { externalReferences, missingExternalValues, secretsInPrompts } from "../config/external.js";
 import {
   resolveMcpServers,
   resolveModel,
@@ -191,10 +191,14 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
 
   const missing = missingExternalValues(config);
   if (missing.length > 0) throw new Error(`missing outside values: ${missing.join("; ")}`);
+  const promptSecrets = secretsInPrompts(config);
+  if (promptSecrets.length > 0) throw new Error(promptSecrets.join("; "));
 
   const context = initialContext(config);
   const declaredServers = resolveMcpServers(config);
-  const proxy = declaredServers.length > 0 ? new McpProxy(declaredServers) : null;
+  const proxy = declaredServers.length > 0 ? new McpProxy(declaredServers, undefined, secretValues(config)) : null;
+  const redact = createRedactor(config, proxy?.authHeaders.map((header) => header.value) ?? []);
+  const hiddenEnv = externalReferences(config).secrets;
 
   let currentState = "idle";
   const transitionTo = (nextState: string) => {
@@ -263,7 +267,8 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
         quiet: tracesToStdout(config.trace),
         signal,
         confirm: config.confirm,
-        redact: createRedactor(config, proxy?.authHeaders.map((header) => header.value) ?? []),
+        redact,
+        hiddenEnv,
         promptPermission: options.promptPermission,
         onUpdate: (_chunk, update) => {
           inspect?.({
@@ -340,7 +345,8 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
           try {
             const prompt = resolveStepPrompt(config, currentStep, inputVars);
             transitionTo("working");
-            const reply = await session!.prompt(buildPrompt(prompt, context.pendingFailure));
+            const failure = context.pendingFailure && { ...context.pendingFailure, output: redact(context.pendingFailure.output) };
+            const reply = await session!.prompt(buildPrompt(redact(prompt), failure));
             context.pendingFailure = undefined;
             context.turnText = reply;
             context.turnIndex += 1;

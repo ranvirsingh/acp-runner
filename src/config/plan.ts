@@ -86,7 +86,7 @@ export function planRunbook(path: string): string {
   const yamlPath = resolveRunbookPath(path);
   const config: RunnerConfig = { yamlPath, cwd: process.cwd(), runbook: loadAgentYaml(yamlPath) };
   const { name, description, steps } = config.runbook;
-  const title = [name ?? "agent", description].filter(Boolean).join(": ");
+  const title = [name ?? "agent", description?.trim()].filter(Boolean).join(": ");
   return createRedactor(config)(
     [title, ...externalBlock(config), ...steps.flatMap((step, index) => ["", ...planStep(config, step, index)])].join("\n"),
   );

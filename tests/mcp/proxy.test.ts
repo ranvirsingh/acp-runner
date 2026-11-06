@@ -50,7 +50,6 @@ test("McpProxy: HTTP requires authentication and rejects browser origins", async
     })).status, 413);
     await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
     assert.equal((await client.callTool({ name: "greet__greet", arguments: { name: "test" } })).isError, undefined);
-    // Authentication must also apply to requests with an existing session ID.
     const sessionId = (client.transport as StreamableHTTPClientTransport).sessionId!;
     assert.equal((await fetch(url, {
       method: "POST", headers: { "mcp-session-id": sessionId },
@@ -173,4 +172,23 @@ test("McpProxy: downstream servers see the runner version", async () => {
   ]);
   assert.equal(await proxy.readResource("cat", "mem://client-version"), RUNNER_VERSION);
   await proxy.close();
+});
+
+test("McpProxy: refuses a tool call whose arguments carry a known secret, at any depth", async () => {
+  const logged: string[] = [];
+  const proxy = new McpProxy([greetServer()], (message) => logged.push(message), ["guard-secret-value-1"]);
+  try {
+    await proxy.setScope({ greet: {} }, "one");
+    for (const args of [{ name: "x guard-secret-value-1" }, { name: "ok", extra: { deep: ["guard-secret-value-1"] } }]) {
+      const result = await proxy.callTool("greet__greet", args);
+      assert.equal(result.isError, true);
+      assert.match(JSON.stringify(result.content), /tool \\"greet__greet\\" was refused: its arguments contain a secret/);
+    }
+    assert.ok(logged.some((line) => line.includes("greet__greet")));
+    assert.ok(logged.every((line) => !line.includes("guard-secret-value-1")));
+    const clean = await proxy.callTool("greet__greet", { name: "test" });
+    assert.equal(clean.isError, undefined);
+  } finally {
+    await proxy.close();
+  }
 });

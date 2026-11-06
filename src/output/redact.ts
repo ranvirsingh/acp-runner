@@ -3,7 +3,7 @@ import { externalReferences } from "../config/external.js";
 
 export const SECRET_NAME = /token|secret|password|passwd|api[_-]?key|credential|authorization|cookie|private[_-]?key/i;
 
-export function createRedactor(config?: RunnerConfig, extraSecrets: string[] = []): (text: string) => string {
+export function secretValues(config?: RunnerConfig, extraSecrets: string[] = []): string[] {
   const secrets = new Set(extraSecrets);
   const collect = (values: Record<string, unknown> = {}) => {
     for (const [key, value] of Object.entries(values)) {
@@ -23,7 +23,11 @@ export function createRedactor(config?: RunnerConfig, extraSecrets: string[] = [
     }
     if ("env" in server) collect(server.env);
   }
-  const values = [...secrets].filter((value) => value.length >= 4).sort((a, b) => b.length - a.length);
+  return [...secrets].filter((value) => value.length >= 4).sort((a, b) => b.length - a.length);
+}
+
+export function createRedactor(config?: RunnerConfig, extraSecrets: string[] = []): (text: string) => string {
+  const values = secretValues(config, extraSecrets);
   return (text) => {
     for (const value of values) text = text.replaceAll(value, "[REDACTED]");
     return text;
