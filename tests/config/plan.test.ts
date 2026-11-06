@@ -77,3 +77,14 @@ test("plan: lists the outside values the run needs, secrets apart from env", () 
 test("plan: a runbook with no outside values prints no external block", () => {
   assert.doesNotMatch(planRunbook("examples/riddle"), /^external$/m);
 });
+
+test("plan: a folded description does not leave a blank line under the title", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-plan-"));
+  const path = join(dir, "agent.yaml");
+  writeFileSync(path, "name: folded\ndescription: >\n  Long text\n  over two lines.\nsteps:\n  - id: gate\n    run: \"true\"\n");
+  try {
+    assert.match(planRunbook(path), /^folded: Long text over two lines\.\n\n1\. gate$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
