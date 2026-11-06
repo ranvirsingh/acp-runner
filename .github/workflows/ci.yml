@@ -17,6 +17,7 @@ jobs:
         with:
           bun-version-file: .bun-version
       - run: npm ci
+      - run: npm audit --audit-level=low
       - run: npm run typecheck
       - run: npm run test:node
       - run: npm run build
