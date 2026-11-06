@@ -32,9 +32,19 @@ export class McpProxy {
   private httpServer: HttpServer | null = null;
   private readonly log: (message: string) => void;
 
-  constructor(servers: ResolvedMcpServer[], log: (message: string) => void = () => {}) {
+  constructor(
+    servers: ResolvedMcpServer[],
+    log: (message: string) => void = () => {},
+    private readonly secrets: string[] = [],
+  ) {
     for (const server of servers) this.declared.set(server.name, server);
     this.log = log;
+  }
+
+  private carriesSecret(value: unknown): boolean {
+    if (typeof value === "string") return this.secrets.some((secret) => value.includes(secret));
+    if (value && typeof value === "object") return Object.values(value).some((item) => this.carriesSecret(item));
+    return false;
   }
 
   get entryName(): string {
@@ -119,6 +129,13 @@ export class McpProxy {
             text: `tool "${qualified}" is not in scope for step "${this.stepId}"`,
           },
         ],
+      };
+    }
+    if (this.carriesSecret(args)) {
+      this.log(`refused ${qualified} in step ${this.stepId}: its arguments contain a secret`);
+      return {
+        isError: true,
+        content: [{ type: "text", text: `tool "${qualified}" was refused: its arguments contain a secret` }],
       };
     }
     const client = this.clients.get(split.server);

@@ -12,6 +12,11 @@ if (pidFile) {
   writeFileSync(pidFile, String(process.pid));
 }
 
+const envFile = process.env.ACP_FIXTURE_ENV_FILE;
+if (envFile) {
+  writeFileSync(envFile, process.env.ACP_GUARD_SECRET ?? "absent");
+}
+
 if (mode === "split-stderr") {
   process.stderr.write("HEL");
   process.stderr.write("LO\nWOR");

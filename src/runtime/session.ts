@@ -64,6 +64,7 @@ export interface SessionOptions {
   confirm?: boolean;
   promptPermission?: (pending: PermissionPending) => Promise<string> | string;
   redact?: (text: string) => string;
+  hiddenEnv?: string[];
   onUpdate?: (chunk: string, update: Record<string, unknown>) => void;
   onToolCall?: (toolCallId: string, name: string) => void;
   onToolCallUpdate?: (toolCallId: string, status: string, name?: string) => void;
@@ -300,6 +301,7 @@ export class AcpSession {
 
     const env = { ...process.env };
     delete env.npm_config_package;
+    for (const name of this.options.hiddenEnv ?? []) delete env[name];
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...env, ...this.options.env },
