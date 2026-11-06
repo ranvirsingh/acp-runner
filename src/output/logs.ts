@@ -1,3 +1,5 @@
+import { createRedactor } from "./redact.js";
+
 const TAG_WIDTH = 8;
 
 function nested(name: string, message: string): string {
@@ -12,12 +14,12 @@ export function stateLog(from: string, to: string): void {
   console.log(nested("state", `${from} → ${to}`));
 }
 
-export function createAcpLogger(provider: string, quiet = false): (message: string) => void {
+export function createAcpLogger(provider: string, quiet = false, redact = createRedactor()): (message: string) => void {
   let previous: string | null = null;
   return (message) => {
     if (quiet || message === previous) return;
     previous = message;
-    console.log(nested(provider, message));
+    console.log(redact(nested(provider, message)));
   };
 }
 

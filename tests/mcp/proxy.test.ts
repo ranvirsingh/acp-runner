@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { request } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { McpProxy } from "../../src/mcp/proxy.ts";
@@ -17,6 +19,47 @@ const greet = join(
 function greetServer(): ResolvedMcpServer {
   return { type: "stdio", name: "greet", command: "node", args: [greet], env: [] };
 }
+
+test("McpProxy: HTTP requires authentication and rejects browser origins", async () => {
+  const proxy = new McpProxy([greetServer()]);
+  const client = new Client({ name: "http-test", version: "0.0.0" });
+  try {
+    await proxy.setScope({ greet: {} }, "one");
+    const url = await proxy.listenHttp();
+    assert.equal((await fetch(url, { method: "POST" })).status, 401);
+    assert.equal((await fetch(url, {
+      method: "POST", headers: { Authorization: "Bearer incorrect" },
+    })).status, 401);
+    const headers = Object.fromEntries(proxy.authHeaders.map(({ name, value }) => [name, value]));
+    assert.equal((await fetch(url, {
+      method: "POST", headers: { ...headers, Origin: "https://example.com" },
+    })).status, 403);
+    const invalidHostStatus = await new Promise<number | undefined>((resolve, reject) => {
+      const req = request(url, { method: "POST", headers: { ...headers, Host: "attacker.example" } }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal(invalidHostStatus, 403);
+    assert.equal((await fetch(`${url}/other`, { method: "POST", headers })).status, 404);
+    assert.equal((await fetch(url, {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ padding: "x".repeat(1024 * 1024) }),
+    })).status, 413);
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
+    assert.equal((await client.callTool({ name: "greet__greet", arguments: { name: "test" } })).isError, undefined);
+    // Authentication must also apply to requests with an existing session ID.
+    const sessionId = (client.transport as StreamableHTTPClientTransport).sessionId!;
+    assert.equal((await fetch(url, {
+      method: "POST", headers: { "mcp-session-id": sessionId },
+    })).status, 401);
+  } finally {
+    await client.close();
+    await proxy.close();
+  }
+});
 
 async function connected(proxy: McpProxy): Promise<Client> {
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();

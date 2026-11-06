@@ -49,8 +49,8 @@ test("pickAllowOption: recognises an allow option by its id when kind is missing
   );
 });
 
-test("pickAllowOption: falls back to the first option when none look like allow", () => {
-  assert.equal(pickAllowOption([{ optionId: "first" }, { optionId: "second" }]), "first");
+test("pickAllowOption: refuses unknown options", () => {
+  assert.equal(pickAllowOption([{ optionId: "first" }, { optionId: "second" }]), undefined);
 });
 
 test("pickAllowOption: undefined when the agent offered no options", () => {

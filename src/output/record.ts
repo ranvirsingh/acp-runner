@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type {
@@ -20,6 +20,7 @@ import type {
 import { isScriptStep, tracesToFile, tracesToStdout } from "../types.js";
 import { toolNameFromUpdate } from "./logs.js";
 import { resolveModel, resolveStepServers } from "../config/yaml.js";
+import { createRedactor } from "./redact.js";
 
 export function createRunId(date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -48,6 +49,8 @@ export class RunRecorder {
   readonly runId: string;
   readonly config: RunnerConfig;
   private readonly filePath: string | null = null;
+  private fileDescriptor: number | null = null;
+  private readonly redact: (text: string) => string;
   private fileDisabled = false;
   private readonly startTime: number;
   private stepsRunCount = 0;
@@ -63,6 +66,7 @@ export class RunRecorder {
 
   constructor(config: RunnerConfig, runId = createRunId()) {
     this.config = config;
+    this.redact = createRedactor(config);
     this.runId = runId;
     this.startTime = Date.now();
     const first = config.runbook.steps[0];
@@ -72,8 +76,9 @@ export class RunRecorder {
     if (tracesToFile(config.trace)) {
       const runnerDir = join(config.cwd, ".runner");
       try {
-        mkdirSync(runnerDir, { recursive: true });
+        mkdirSync(runnerDir, { recursive: true, mode: 0o700 });
         this.filePath = join(runnerDir, `run-${this.runId}.jsonl`);
+        this.fileDescriptor = openSync(this.filePath, "wx", 0o600);
       } catch (error: any) {
         console.error(`[runner] warning: could not write run record (${error?.message ?? error})`);
         this.fileDisabled = true;
@@ -82,13 +87,13 @@ export class RunRecorder {
   }
 
   private emit(event: RecordEvent): void {
-    const line = JSON.stringify(event);
+    const line = JSON.stringify(event, (_key, value) => typeof value === "string" ? this.redact(value) : value);
     if (tracesToStdout(this.config.trace)) {
       console.log(line);
     }
-    if (this.filePath && !this.fileDisabled) {
+    if (this.fileDescriptor !== null && !this.fileDisabled) {
       try {
-        appendFileSync(this.filePath, line + "\n", "utf8");
+        writeSync(this.fileDescriptor, line + "\n", undefined, "utf8");
       } catch (error: any) {
         console.error(`[runner] warning: could not write run record (${error?.message ?? error})`);
         this.fileDisabled = true;
@@ -202,7 +207,7 @@ export class RunRecorder {
       const ms = Date.now() - this.activeStep.startTime;
       const outcome = context.lastError ? "failure" : (context.stepOutcome ?? "success");
       const feedback = context.failure?.output ?? context.lastError;
-      const truncated = truncateFeedback(feedback);
+      const truncated = truncateFeedback(feedback ? this.redact(feedback) : undefined);
       const stepEndEv: StepEndEvent = {
         ts: new Date().toISOString(),
         run: this.runId,
@@ -293,5 +298,9 @@ export class RunRecorder {
       error: error ?? null,
     };
     this.emit(endEv);
+    if (this.fileDescriptor !== null) {
+      closeSync(this.fileDescriptor);
+      this.fileDescriptor = null;
+    }
   }
 }

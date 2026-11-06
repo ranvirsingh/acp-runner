@@ -18,6 +18,7 @@ import { planCommand } from "./config/plan.js";
 import { checkCommand } from "./runtime/check.js";
 import { installSkill } from "./skill.js";
 import { RUNNER_VERSION } from "./version.js";
+import { createRedactor } from "./output/redact.js";
 
 const USAGE =
   "usage: acp-runner run [agent.yaml|folder] [--cwd <dir>] [--trace off|file|stdout|both] [--confirm]\n" +
@@ -137,6 +138,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   if (command !== "run") throw new Error(`unknown command "${command}"\n${USAGE}`);
   const args = parseArgs(rest);
   const config = loadConfig(args);
+  const redact = createRedactor(config);
   if (!tracesToStdout(config.trace)) {
     console.log(`[runner] ${config.runbook.name ?? "agent"} cwd=${config.cwd}`);
   }
@@ -195,7 +197,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
 
   if (runOutcome === "failed") {
     if (!tracesToStdout(config.trace)) {
-      console.error(`[runner] failed: ${lastError ?? "unknown error"}`);
+      console.error(redact(`[runner] failed: ${lastError ?? "unknown error"}`));
     }
     process.exitCode = 1;
     return;
@@ -220,7 +222,7 @@ function isDirectRun(): boolean {
 
 if (isDirectRun()) {
   runCli().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
+    console.error(createRedactor()(error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;
   });
 }

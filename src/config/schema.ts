@@ -22,19 +22,27 @@ const varSource = z.union([
   z.number(),
   z.boolean(),
   z.null(),
-  z.object({ env: z.string().min(1) }).strict(),
+  z
+    .object({ env: z.string().min(1) })
+    .strict()
+    .superRefine((source, ctx) => {
+      ctx.addIssue({
+        code: "custom",
+        message: "vars hold workflow values; write ${{ env." + source.env + " }} or ${{ secrets." + source.env + " }} where the value is used",
+      });
+    }),
   fileSource,
   resourceSource,
 ]);
 
-const vars = z.record(varSource);
+const vars = z.record(z.string(), varSource);
 
 const stdioServer = z
   .object({
     type: z.literal("stdio").optional(),
     command: z.string().min(1),
     args: z.array(z.string()).optional(),
-    env: z.record(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 
@@ -42,7 +50,7 @@ const remoteServer = z
   .object({
     type: z.enum(["http", "sse"]),
     url: z.string().url(),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 
@@ -55,7 +63,7 @@ const toolScope = z
   })
   .strict();
 
-const stepServers = z.union([z.array(z.string().min(1)), z.record(toolScope)]);
+const stepServers = z.union([z.array(z.string().min(1)), z.record(z.string(), toolScope)]);
 
 const stepTransition = z.union([
   z.string().min(1),
@@ -119,8 +127,8 @@ export const agentYamlSchema = z
   .object({
     name: z.string().optional(),
     description: z.string().optional(),
-    providers: z.record(providerDeclaration).optional(),
-    mcpServers: z.record(mcpServer).optional(),
+    providers: z.record(z.string(), providerDeclaration).optional(),
+    mcpServers: z.record(z.string(), mcpServer).optional(),
     vars: vars.optional(),
     steps: z.array(step).min(1),
   })
@@ -131,7 +139,7 @@ export const agentYamlSchema = z
   })
   .superRefine((value, ctx) => {
     const providers = Object.keys(value.providers ?? {}).sort();
-    const checkProvider = (name: string | undefined, path: Array<string | number>) => {
+    const checkProvider = (name: string | undefined, path: PropertyKey[]) => {
       if (name === undefined || providers.includes(name)) return;
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -221,20 +229,30 @@ export const agentYamlSchema = z
     });
   });
 
-function formatPath(path: Array<string | number>): string {
+function formatPath(path: PropertyKey[]): string {
   return path.reduce<string>((acc, part) => {
     if (typeof part === "number") return `${acc}[${part}]`;
-    return acc ? `${acc}.${part}` : part;
+    return acc ? `${acc}.${String(part)}` : String(part);
   }, "");
 }
 
 function describeIssue(issue: z.ZodIssue): string {
+  if (issue.code === "unrecognized_keys") {
+    return `Unrecognized key(s) in object: ${issue.keys.map((key) => `'${key}'`).join(", ")}`;
+  }
+  if (issue.code === "invalid_type" && issue.message.endsWith("received undefined")) return "Required";
+  if (issue.code === "invalid_type") return issue.message.replace(/^Invalid input: expected /, "Expected ");
+  if (issue.code === "too_small" && issue.origin === "array") {
+    return `Array must contain at least ${issue.minimum} element(s)`;
+  }
   if (issue.code !== z.ZodIssueCode.invalid_union) return issue.message;
-  const branches = issue.unionErrors.map((error) =>
-    error.issues
+  const explained = issue.errors.flat().find((inner) => inner.code === "custom");
+  if (explained) return explained.message;
+  const branches = issue.errors.map((issues) =>
+    issues
       .map((inner) => {
         const where = formatPath(inner.path);
-        return where ? `${where}: ${inner.message}` : inner.message;
+        return where ? `${where}: ${describeIssue(inner)}` : describeIssue(inner);
       })
       .join("; "),
   );

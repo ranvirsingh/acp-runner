@@ -86,7 +86,8 @@ test("ACP failure reports keep the Unicode output tail within 16 KiB including l
     { id: "verify", run: { command: process.execPath, args: ["huge.cjs", "界".repeat(20000)] }, on: { failure: "fix" } },
     { id: "fix", do: "Fix it." },
   ] });
-  writeFileSync(join(p.dir, "huge.cjs"), "console.log('START-' + '😀界'.repeat(8000)); console.error('TAIL: {{feedback}} ${{vars.secret}}'); process.exit(1);");
+  // Flush both streams before exiting. Node 20 can discard queued console output.
+  writeFileSync(join(p.dir, "huge.cjs"), "const fs = require('node:fs'); fs.writeFileSync(1, 'START-' + '😀界'.repeat(8000) + '\\n'); fs.writeFileSync(2, 'TAIL: {{feedback}} ${{vars.secret}}\\n'); process.exit(1);");
   try {
     assert.equal((await runAgent({ config: p.config })).outcome, "finished");
     const block = p.prompts()[0].prompt[1];

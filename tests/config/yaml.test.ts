@@ -316,11 +316,11 @@ test("resolveMcpServers: a bare command stays a PATH lookup, a folder command is
   );
 });
 
-test("resolveMcpServers: env becomes a name/value list and renders {{env.X}}", () => {
+test("resolveMcpServers: env becomes a name/value list and renders ${{ env.X }}", () => {
   process.env.ACP_TEST_MCP_TOKEN = "sekret";
   try {
     const config = configFor({
-      mcpServers: { echo: { command: "node", env: { TOKEN: "{{env.ACP_TEST_MCP_TOKEN}}" } } },
+      mcpServers: { echo: { command: "node", env: { TOKEN: "${{ env.ACP_TEST_MCP_TOKEN }}" } } },
       steps: [],
     });
     assert.deepEqual(resolveMcpServers(config)[0], {
@@ -337,7 +337,7 @@ test("resolveMcpServers: env becomes a name/value list and renders {{env.X}}", (
 
 test("resolveMcpServers: an unset environment variable fails and names the server", () => {
   const config = configFor({
-    mcpServers: { "gcp-usage": { command: "python", env: { KEY: "{{env.ACP_TEST_ABSENT}}" } } },
+    mcpServers: { "gcp-usage": { command: "python", env: { KEY: "${{ env.ACP_TEST_ABSENT }}" } } },
     steps: [],
   });
   assert.throws(
@@ -474,11 +474,11 @@ test("resolveStepCommand: renders the run command on a composite step", () => {
   );
 });
 
-test("resolveStepCommand: renders {{env.VAR}} in command string", () => {
+test("resolveStepCommand: renders ${{ env.VAR }} in command string", () => {
   process.env.ACP_TEST_FLAG = "--verbose";
   try {
     const config = configFor({
-      steps: [{ id: "test", run: "npm test -- {{env.ACP_TEST_FLAG}}" }],
+      steps: [{ id: "test", run: "npm test -- ${{ env.ACP_TEST_FLAG }}" }],
     });
     assert.equal(
       resolveStepCommand(config, config.runbook.steps[0]),

@@ -19,6 +19,7 @@ import {
   toolNameFromUpdate,
 } from "../output/logs.js";
 import { RUNNER_VERSION } from "../version.js";
+import { createRedactor } from "../output/redact.js";
 import { needsNewBody } from "../config/yaml.js";
 import type { ProviderSpec } from "./providers.js";
 import type { PermissionPending, ProviderId, ResolvedMcpServer } from "../types.js";
@@ -31,6 +32,7 @@ export interface PermissionOption {
 
 export interface McpProxyHandle {
   entryName: string;
+  readonly authHeaders?: Array<{ name: string; value: string }>;
   listenHttp(): Promise<string>;
 }
 
@@ -61,6 +63,7 @@ export interface SessionOptions {
   signal?: AbortSignal;
   confirm?: boolean;
   promptPermission?: (pending: PermissionPending) => Promise<string> | string;
+  redact?: (text: string) => string;
   onUpdate?: (chunk: string, update: Record<string, unknown>) => void;
   onToolCall?: (toolCallId: string, name: string) => void;
   onToolCallUpdate?: (toolCallId: string, status: string, name?: string) => void;
@@ -77,24 +80,15 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 export function pickAllowOption(options: PermissionOption[]): string | undefined {
-  const allow = options.find(
-    (option) =>
-      option.kind === "allow_once" ||
-      option.kind === "allow_always" ||
-      option.optionId.toLowerCase().includes("allow"),
-  );
-  return allow?.optionId ?? options[0]?.optionId;
+  return options.find((option) => option.kind === "allow_once")?.optionId
+    ?? options.find((option) => option.kind === "allow_always")?.optionId
+    ?? options.find((option) => !option.kind && /^allow(?:[-_]once|[-_]always)?$/i.test(option.optionId))?.optionId;
 }
 
 export function pickRejectOption(options: PermissionOption[]): string | undefined {
-  const reject = options.find(
-    (option) =>
-      option.kind === "reject_once" ||
-      option.kind === "reject_always" ||
-      option.optionId.toLowerCase().includes("reject") ||
-      option.optionId.toLowerCase().includes("deny"),
-  );
-  return reject?.optionId ?? options[0]?.optionId;
+  return options.find((option) => option.kind === "reject_once")?.optionId
+    ?? options.find((option) => option.kind === "reject_always")?.optionId
+    ?? options.find((option) => !option.kind && /^(?:reject|deny)(?:[-_]once|[-_]always)?$/i.test(option.optionId))?.optionId;
 }
 
 export function extractText(update: Record<string, unknown>): string {
@@ -271,7 +265,7 @@ export class AcpSession {
     public readonly provider: ProviderSpec,
     public readonly options: SessionOptions,
   ) {
-    this.acpLog = createAcpLogger(provider.id, Boolean(options.quiet));
+    this.acpLog = createAcpLogger(provider.id, Boolean(options.quiet), options.redact ?? createRedactor());
   }
 
   get state(): SessionState {
@@ -403,7 +397,7 @@ export class AcpSession {
             } else {
               optionId = pickRejectOption(options) ?? "reject";
             }
-            if (optionId !== "allow" && !optionId.includes("allow")) {
+            if (optionId !== "allow") {
               this.acpLog(`permission rejected Write ${ctx.params.path}`);
               throw new Error(`Permission denied: write to ${ctx.params.path}`);
             }
@@ -486,7 +480,7 @@ export class AcpSession {
         `${this.provider.id}: cannot host the runner MCP proxy: the agent reports no http MCP transport`,
       );
     }
-    return [{ type: "http", name: proxy.entryName, url: await proxy.listenHttp(), headers: [] }];
+    return [{ type: "http", name: proxy.entryName, url: await proxy.listenHttp(), headers: proxy.authHeaders ?? [] }];
   }
 
   private handleUpdate(params: { update?: unknown }): void {
@@ -522,15 +516,20 @@ export class AcpSession {
     };
     this.options.onPermissionRequested?.(pending);
 
-    let optionId = pickAllowOption(options) ?? "allow";
+    let optionId = pickAllowOption(options);
     if (this.options.confirm) {
       if (this.options.promptPermission) {
         optionId = await this.options.promptPermission(pending);
       } else {
-        optionId = pickRejectOption(options) ?? "reject";
+        optionId = pickRejectOption(options);
       }
     }
 
+    if (!optionId || !options.some((option) => option.optionId === optionId)) {
+      this.acpLog("permission cancelled");
+      this.options.onPermissionResolved?.("cancelled");
+      return { outcome: { outcome: "cancelled" } };
+    }
     this.acpLog(`permission ${this.options.confirm ? "resolved" : "auto-approved"} ${optionId}`);
     this.options.onPermissionResolved?.(optionId);
 

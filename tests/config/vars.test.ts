@@ -202,10 +202,10 @@ test("renderPromptTemplate: the same placeholder is replaced everywhere", () => 
   );
 });
 
-test("renderPromptTemplate: env.NAME reads the process environment", () => {
+test("renderPromptTemplate: ${{ env.NAME }} reads the process environment", () => {
   process.env.ACP_TEST_BRANCH = "main";
   try {
-    assert.equal(renderPromptTemplate("On {{env.ACP_TEST_BRANCH}}", {}), "On main");
+    assert.equal(renderPromptTemplate("On ${{ env.ACP_TEST_BRANCH }}", {}), "On main");
   } finally {
     delete process.env.ACP_TEST_BRANCH;
   }
@@ -228,42 +228,15 @@ test("renderPromptTemplate: an undeclared variable throws instead of passing thr
 test("renderPromptTemplate: an unset environment variable throws", () => {
   delete process.env.ACP_TEST_ABSENT;
   assert.throws(
-    () => renderPromptTemplate("On {{env.ACP_TEST_ABSENT}}", {}),
+    () => renderPromptTemplate("On ${{ env.ACP_TEST_ABSENT }}", {}),
     /ACP_TEST_ABSENT is not set/,
   );
 });
 
 test("renderPromptTemplate: an unknown namespace throws", () => {
   assert.throws(
-    () => renderPromptTemplate("Token {{secrets.api_key}}", {}),
-    /unknown namespace "secrets"/,
-  );
-});
-
-test("resolveStepVariables: an { env } source reads the process environment", () => {
-  process.env.ACP_TEST_BRANCH = "release";
-  try {
-    const config = runnerFromYaml({
-      vars: { branch: { env: "ACP_TEST_BRANCH" } },
-      steps: [{ id: "a", do: "on {{branch}}" }],
-    });
-    assert.deepEqual(resolveStepVariables(config, config.runbook.steps[0]), {
-      branch: "release",
-    });
-  } finally {
-    delete process.env.ACP_TEST_BRANCH;
-  }
-});
-
-test("resolveStepVariables: an { env } source for an unset name throws and names the var", () => {
-  delete process.env.ACP_TEST_ABSENT;
-  const config = runnerFromYaml({
-    vars: { token: { env: "ACP_TEST_ABSENT" } },
-    steps: [{ id: "a", do: "use {{token}}" }],
-  });
-  assert.throws(
-    () => resolveStepVariables(config, config.runbook.steps[0]),
-    /var token: environment variable ACP_TEST_ABSENT is not set/,
+    () => renderPromptTemplate("Token {{other.api_key}}", {}),
+    /unknown namespace "other"/,
   );
 });
 

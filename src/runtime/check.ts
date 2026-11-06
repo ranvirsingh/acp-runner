@@ -2,7 +2,8 @@ import { dirname, resolve } from "node:path";
 import { loadAgentYaml, resolveRunbookPath } from "../config/yaml.js";
 import { AcpSession } from "./session.js";
 import { providerSpec } from "./providers.js";
-import type { ProviderDeclaration } from "../types.js";
+import { missingExternalValues } from "../config/external.js";
+import type { AgentYaml, ProviderDeclaration } from "../types.js";
 
 type CheckResult = { ok: true; note: string } | { ok: false; reason: string };
 
@@ -36,14 +37,20 @@ async function checkProvider(
 
 export async function checkCommand(target: string): Promise<number> {
   let yamlPath: string;
-  let providers: Record<string, ProviderDeclaration>;
+  let runbook: AgentYaml;
   try {
     yamlPath = resolve(resolveRunbookPath(target));
-    providers = loadAgentYaml(yamlPath).providers ?? {};
+    runbook = loadAgentYaml(yamlPath);
   } catch (error) {
     console.error(messageOf(error));
     return 1;
   }
+  const missing = missingExternalValues({ yamlPath, cwd: dirname(yamlPath), runbook });
+  if (missing.length > 0) {
+    for (const message of missing) console.error(`fail ${message}`);
+    return 1;
+  }
+  const providers: Record<string, ProviderDeclaration> = runbook.providers ?? {};
   const ids = Object.keys(providers);
   const results = await Promise.all(ids.map((id) => checkProvider(id, providers, dirname(yamlPath))));
   ids.forEach((id, index) => {

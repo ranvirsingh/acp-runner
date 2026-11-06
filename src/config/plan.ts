@@ -1,4 +1,6 @@
 import type { AgentStep, RunnerConfig, StepTransition } from "../types.js";
+import { createRedactor } from "../output/redact.js";
+import { externalReferences } from "./external.js";
 import {
   loadAgentYaml,
   resolveModel,
@@ -69,12 +71,25 @@ function planStep(config: RunnerConfig, step: AgentStep, index: number): string[
   return lines;
 }
 
+function externalBlock(config: RunnerConfig): string[] {
+  const { env, secrets } = externalReferences(config);
+  if (env.length + secrets.length === 0) return [];
+  return [
+    "",
+    "external",
+    ...(secrets.length > 0 ? row("secrets", secrets.join(", ")) : []),
+    ...(env.length > 0 ? row("env", env.join(", ")) : []),
+  ];
+}
+
 export function planRunbook(path: string): string {
   const yamlPath = resolveRunbookPath(path);
   const config: RunnerConfig = { yamlPath, cwd: process.cwd(), runbook: loadAgentYaml(yamlPath) };
   const { name, description, steps } = config.runbook;
   const title = [name ?? "agent", description].filter(Boolean).join(": ");
-  return [title, ...steps.flatMap((step, index) => ["", ...planStep(config, step, index)])].join("\n");
+  return createRedactor(config)(
+    [title, ...externalBlock(config), ...steps.flatMap((step, index) => ["", ...planStep(config, step, index)])].join("\n"),
+  );
 }
 
 export function planCommand(target: string): number {
