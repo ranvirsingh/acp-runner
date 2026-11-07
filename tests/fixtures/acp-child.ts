@@ -7,6 +7,13 @@ const mode = process.argv.find((arg) => arg.startsWith("--mode="))?.slice(7) ?? 
 const capture = process.argv.find((arg) => arg.startsWith("--capture="))?.slice(10);
 const fragment = Number(process.env.ACP_FIXTURE_FRAGMENT ?? "0");
 const pidFile = process.env.ACP_FIXTURE_PID_FILE;
+const reopen = process.env.ACP_FIXTURE_REOPEN ?? "none";
+const reopenError = process.env.ACP_FIXTURE_REOPEN_ERROR;
+const callsFile = process.env.ACP_FIXTURE_CALLS;
+
+function logCall(method: string, sessionId?: string): void {
+  if (callsFile) appendFileSync(callsFile, `${JSON.stringify({ method, sessionId })}\n`);
+}
 
 if (pidFile) {
   writeFileSync(pidFile, String(process.pid));
@@ -69,9 +76,14 @@ const app = acp
     if (mode === "exit-before-session") {
       setTimeout(() => process.exit(11), 0);
     }
+    logCall("initialize");
     return {
       protocolVersion: acp.PROTOCOL_VERSION,
-      agentCapabilities: mode === "no-mcp-http" ? {} : { mcpCapabilities: { http: true } },
+      agentCapabilities: {
+        ...(mode === "no-mcp-http" ? {} : { mcpCapabilities: { http: true } }),
+        ...(reopen === "load" || reopen === "both" ? { loadSession: true } : {}),
+        ...(reopen === "resume" || reopen === "both" ? { sessionCapabilities: { resume: {} } } : {}),
+      },
       authMethods: mode === "cached-auth"
         ? [{ id: "openai-api-key", name: "API key" }, { id: "chatgpt", name: "ChatGPT" }]
         : mode === "auth" ? [{ id: "gemini-api-key", name: "API key" }] : [],
@@ -96,26 +108,25 @@ const app = acp
     const requested = ctx.params.cwd;
     if (!isAbsolute(requested)) throw acp.RequestError.invalidParams(undefined, "cwd must be an absolute path");
     sessionId = requested ? `sess_${requested.replace(/[^a-z0-9]/gi, "").slice(-8)}` : sessionId;
+    logCall("session/new", sessionId);
     return {
       sessionId,
-      configOptions:
-        mode !== "no-model-option"
-          ? [
-              {
-                id: "model",
-                name: "Model",
-                category: "model",
-                type: "select" as const,
-                currentValue: "fixture-model",
-                options: [
-                  { value: "fixture-model", name: "Fixture" },
-                  { value: "other", name: "Other" },
-                  { value: "test-model", name: "Test" },
-                ],
-              },
-            ]
-          : undefined,
+      configOptions: configOptions(),
     };
+  })
+  .onRequest(acp.methods.agent.session.resume, async (ctx) => {
+    logCall("session/resume", ctx.params.sessionId);
+    reopened(ctx.params.sessionId, ctx.params.mcpServers ?? []);
+    return { configOptions: configOptions() };
+  })
+  .onRequest(acp.methods.agent.session.load, async (ctx) => {
+    logCall("session/load", ctx.params.sessionId);
+    reopened(ctx.params.sessionId, ctx.params.mcpServers);
+    await ctx.client.notify(acp.methods.client.session.update, {
+      sessionId,
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "replayed-history" } },
+    });
+    return { configOptions: configOptions() };
   })
   .onNotification(acp.methods.agent.session.cancel, () => {
     releaseTurn?.();
@@ -129,6 +140,37 @@ const app = acp
     return { configOptions: [] };
   })
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+    logCall("session/prompt", ctx.params.sessionId);
+    return prompt(ctx);
+  });
+
+function reopened(id: string, servers: acp.McpServer[]): void {
+  if (reopenError === "not-found") throw acp.RequestError.resourceNotFound(id);
+  if (reopenError === "auth") throw acp.RequestError.authRequired();
+  sessionId = id;
+  mcpServers = servers;
+}
+
+function configOptions() {
+  return mode !== "no-model-option"
+    ? [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select" as const,
+          currentValue: "fixture-model",
+          options: [
+            { value: "fixture-model", name: "Fixture" },
+            { value: "other", name: "Other" },
+            { value: "test-model", name: "Test" },
+          ],
+        },
+      ]
+    : undefined;
+}
+
+async function prompt(ctx: any): Promise<acp.PromptResponse> {
     if (capture) appendFileSync(capture, `${JSON.stringify(ctx.params)}\n`);
     if (mode === "reject-prompt") throw new Error("fixture prompt rejected");
     if (mode === "exit-during-prompt") {
@@ -141,10 +183,10 @@ const app = acp
       await new Promise<void>((resolve) => {
         releaseTurn = resolve;
       });
-      return { stopReason: "cancelled" };
+      return { stopReason: "cancelled" as const };
     }
 
-    const promptText = ctx.params.prompt.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n\n");
+    const promptText = ctx.params.prompt.flatMap((block: acp.ContentBlock) => block.type === "text" ? [block.text] : []).join("\n\n");
 
     let reply = mode === "unicode"
       ? "café 🎉 日本語"
@@ -204,8 +246,8 @@ const app = acp
         content: { type: "text", text: reply },
       },
     });
-    return { stopReason: "end_turn" };
-  });
+    return { stopReason: "end_turn" as const };
+}
 
 app.connect(stream);
 

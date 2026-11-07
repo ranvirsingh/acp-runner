@@ -5,7 +5,7 @@ import { decideAfterSuccess } from "./decide.js";
 import { collectStepInputs } from "../mcp/inputs.js";
 import { McpProxy } from "../mcp/proxy.js";
 import { providerSpec } from "./providers.js";
-import { AcpSession } from "./session.js";
+import { AcpSession, SessionUnavailable, type SessionOptions } from "./session.js";
 import { buildPrompt } from "./failure.js";
 import { commandResult, type CommandResult } from "./command-result.js";
 import { RequestError } from "@agentclientprotocol/sdk";
@@ -312,6 +312,82 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     return savedFeedback.path;
   };
 
+  const sessionOptions = (targetServers: SessionContext["mcpServers"]): SessionOptions => ({
+    cwd: config.cwd,
+    model: context.model,
+    ...(proxy ? { proxy } : { mcpServers: targetServers }),
+    quiet: tracesToStdout(config.trace),
+    signal,
+    confirm: config.confirm,
+    redact,
+    hiddenEnv,
+    promptPermission: options.promptPermission,
+    onUpdate: (_chunk, update) => {
+      inspect?.({
+        type: "runner.event",
+        event: { type: "UPDATE", update },
+      });
+    },
+    onPermissionRequested: (pending) => {
+      context.pendingPermission = pending;
+      transitionTo("awaitingPermission");
+    },
+    onPermissionResolved: () => {
+      context.pendingPermission = null;
+      transitionTo("working");
+    },
+  });
+
+  let resumable: { provider: ProviderId; sessionId: string } | undefined;
+  let attachedInVisit: { provider: ProviderId; sessionId: string; origin: "new" | "carried" } | undefined;
+
+  const reopenSession = async (stepId: string, target: { provider: ProviderId; sessionId: string }): Promise<boolean> => {
+    transitionTo("spawning");
+    context.provider = target.provider;
+    try {
+      const spec = providerSpec(target.provider, config.runbook.providers);
+      context.model = spec.model;
+      const reopened = await AcpSession.reopen(spec, sessionOptions(context.mcpServers), target.sessionId);
+      session = reopened.session;
+      context.sessionId = target.sessionId;
+      context.effectiveModel = reopened.session.effectiveModel;
+      await record({
+        event: "session_resumed", step: stepId, visit,
+        provider: target.provider, sessionId: target.sessionId, method: reopened.method,
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof StopRun) throw error;
+      if (error instanceof SessionUnavailable) return false;
+      throw new StopRun(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const acquireSession = async (stepId: string, mode: Entry): Promise<"new" | "carried" | "reopened" | null> => {
+    const attached = attachedInVisit;
+    const carried = resumable;
+    attachedInVisit = undefined;
+    resumable = undefined;
+    if (mode === "resend") {
+      if (!carried || !(await reopenSession(stepId, carried))) throw new UnknownOutcome("session_unavailable");
+      return "reopened";
+    }
+    if (attached) {
+      if (await reopenSession(stepId, attached)) return "reopened";
+      if (attached.origin === "carried") throw new UnknownOutcome("session_unavailable");
+      return ensureSession(attached.provider, context.mcpServers);
+    }
+    if (!session && carried && carried.provider === context.provider) {
+      await record({
+        event: "session_attached", step: stepId, visit,
+        provider: carried.provider, sessionId: carried.sessionId, origin: "carried",
+      });
+      if (!(await reopenSession(stepId, carried))) throw new UnknownOutcome("session_unavailable");
+      return "reopened";
+    }
+    return ensureSession(context.provider, context.mcpServers);
+  };
+
   const ensureSession = async (
     targetProvider: ProviderId | undefined,
     targetServers = context.mcpServers,
@@ -340,31 +416,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     try {
       const spec = providerSpec(targetProvider, config.runbook.providers);
       context.model = spec.model;
-      session = await AcpSession.spawn(spec, {
-        cwd: config.cwd,
-        model: context.model,
-        ...(proxy ? { proxy } : { mcpServers: targetServers }),
-        quiet: tracesToStdout(config.trace),
-        signal,
-        confirm: config.confirm,
-        redact,
-        hiddenEnv,
-        promptPermission: options.promptPermission,
-        onUpdate: (_chunk, update) => {
-          inspect?.({
-            type: "runner.event",
-            event: { type: "UPDATE", update },
-          });
-        },
-        onPermissionRequested: (pending) => {
-          context.pendingPermission = pending;
-          transitionTo("awaitingPermission");
-        },
-        onPermissionResolved: () => {
-          context.pendingPermission = null;
-          transitionTo("working");
-        },
-      });
+      session = await AcpSession.spawn(spec, sessionOptions(targetServers));
       context.sessionId = session.sessionId;
       context.effectiveModel = session.effectiveModel;
       context.lastError = undefined;
@@ -406,6 +458,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
         savedFeedback = { failure: context.pendingFailure, path: plan.feedback };
       }
       context.provider = plan.provider;
+      resumable = plan.active;
       const next = plan.next;
       if (next.action === "done") {
         context.lastError = next.reason;
@@ -425,6 +478,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       if (next.action === "continue") {
         entry = next.mode;
         visit = next.visit;
+        attachedInVisit = next.attached;
       }
     }
 
@@ -485,14 +539,18 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
         applyCheckResult(context, currentStep, checkResult);
         transitionTo("choosingNext");
       } else {
-        const origin = await ensureSession(context.provider, context.mcpServers);
+        const origin = state
+          ? await acquireSession(currentStep.id, resumed)
+          : await ensureSession(context.provider, context.mcpServers);
         if (!origin) {
           transitionTo("choosingNext");
         } else {
-          await record({
-            event: "session_attached", step: currentStep.id, visit,
-            provider: context.provider!, sessionId: session!.sessionId!, origin,
-          });
+          if (origin !== "reopened") {
+            await record({
+              event: "session_attached", step: currentStep.id, visit,
+              provider: context.provider!, sessionId: session!.sessionId!, origin,
+            });
+          }
           transitionTo("inSession");
           context.turnText = "";
           try {

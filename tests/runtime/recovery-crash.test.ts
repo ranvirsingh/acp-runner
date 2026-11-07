@@ -127,3 +127,105 @@ test("recovery: pending feedback from the journal reaches the next prompt", asyn
   assert.equal(sent.feedback, "feedback/validate-1.json");
   assert.match(JSON.stringify(p.prompts()[0].prompt), /saved-feedback-text/);
 });
+
+function withEnv<T>(env: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    saved[key] = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  return fn().finally(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+function calls(dir: string): Array<{ method: string; sessionId?: string }> {
+  const path = join(dir, "calls.jsonl");
+  return existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+}
+
+function builderProject(steps: AgentYaml["steps"]) {
+  const p = project(() => ({ steps }));
+  p.config.runbook.providers = { builder: p.provider() };
+  return p;
+}
+
+const passback: AgentYaml["steps"] = [
+  { id: "implement", provider: "builder", do: "Implement", on: { success: "validate" } },
+  { id: "validate", run: "sh -c 'test -f ok || { echo validate-feedback-text; touch ok; exit 1; }'", on: { failure: "implement" } },
+];
+
+test("A1: a stop after session_attached reopens that session and sends the step prompt, with no new step_started or session/new", async () => {
+  const p = builderProject([{ id: "implement", provider: "builder", do: "Implement" }]);
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume", ACP_FIXTURE_CALLS: join(p.dir, "calls.jsonl") }, async () => {
+    await runOnce(p.config, p.dir, (event) => event.event === "session_attached");
+    const sessionId = (readJournal(p.dir).find((event) => event.event === "session_attached") as { sessionId: string }).sessionId;
+    const before = calls(p.dir).length;
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "finished");
+    assert.deepEqual(names(second.added).slice(0, 2), ["session_resumed implement 1", "prompt_sent implement 1"]);
+    const resumed = second.added[0] as { sessionId: string; method: string };
+    assert.equal(resumed.sessionId, sessionId);
+    assert.equal(resumed.method, "session/resume");
+    assert.equal((second.added[1] as { kind: string }).kind, "step");
+    const methods = calls(p.dir).slice(before);
+    assert.deepEqual(methods.map((call) => call.method), ["initialize", "session/resume", "session/prompt"]);
+    assert.equal(methods[1].sessionId, sessionId);
+  });
+});
+
+test("A4: feedback saved before a stop goes to the reopened active session in the next implement visit", async () => {
+  const p = builderProject(passback);
+  await withEnv({ ACP_FIXTURE_REOPEN: "load", ACP_FIXTURE_CALLS: join(p.dir, "calls.jsonl") }, async () => {
+    await runOnce(p.config, p.dir, (event) => event.event === "step_completed" && event.step === "validate");
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "finished");
+    assert.deepEqual(names(second.added).slice(0, 4), [
+      "step_started implement 2", "session_attached implement 2", "session_resumed implement 2", "prompt_sent implement 2",
+    ]);
+    assert.equal((second.added[1] as { origin: string }).origin, "carried");
+    assert.equal((second.added[3] as { feedback?: string }).feedback, "feedback/validate-1.json");
+    assert.match(JSON.stringify(p.prompts()[1].prompt), /validate-feedback-text/);
+    assert.ok(!calls(p.dir).some((call, index) => index > 2 && call.method === "session/new"));
+  });
+});
+
+test("A5a: an unavailable session with origin new and no prompt sent opens a new session and continues", async () => {
+  const p = builderProject([{ id: "implement", provider: "builder", do: "Implement" }]);
+  await runOnce(p.config, p.dir, (event) => event.event === "session_attached");
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume", ACP_FIXTURE_REOPEN_ERROR: "not-found" }, async () => {
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "finished");
+    assert.equal(names(second.added)[0], "session_attached implement 1");
+    assert.equal((second.added[0] as { origin: string }).origin, "new");
+  });
+});
+
+test("A5b: an unavailable carried session with no prompt sent ends the run as unknown", async () => {
+  const p = builderProject(passback);
+  await runOnce(p.config, p.dir, (event) => event.event === "session_attached" && event.visit === 2);
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume", ACP_FIXTURE_REOPEN_ERROR: "not-found" }, async () => {
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "unknown");
+    assert.deepEqual(second.added, [{ event: "run_finished", outcome: "unknown", reason: "session_unavailable" }]);
+  });
+});
+
+test("A5c: a reopen that needs a login, or an agent that does not spawn, stops the run and leaves the journal unchanged", async () => {
+  const p = builderProject([{ id: "implement", provider: "builder", do: "Implement" }]);
+  await runOnce(p.config, p.dir, (event) => event.event === "session_attached");
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume", ACP_FIXTURE_REOPEN_ERROR: "auth" }, async () => {
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "stopped");
+    assert.deepEqual(second.added, []);
+  });
+  await withEnv({ ACP_FIXTURE_MODE: "crash-on-start" }, async () => {
+    const third = await runOnce(p.config, p.dir);
+    assert.equal(third.result.outcome, "stopped");
+    assert.deepEqual(third.added, []);
+  });
+});

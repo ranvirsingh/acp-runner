@@ -40,6 +40,10 @@ export type SessionState = "connecting" | "ready" | "streaming" | "closed";
 
 const CANCEL_GRACE_MS = 1000;
 
+export class SessionUnavailable extends Error {}
+
+export type ReopenMethod = "session/resume" | "session/load";
+
 export function toAcpMcpServer(server: ResolvedMcpServer): acp.McpServer {
   if (server.type === "stdio") {
     return {
@@ -262,6 +266,8 @@ export class AcpSession {
   private readonly toolNames = new Map<string, string>();
   private readonly acpLog: (message: string) => void;
   private closing = false;
+  private replaying = false;
+  private _reopenMethod?: ReopenMethod;
 
   constructor(
     public readonly provider: ProviderSpec,
@@ -300,7 +306,46 @@ export class AcpSession {
     return session;
   }
 
-  private async init(): Promise<void> {
+  static async reopen(
+    provider: ProviderSpec,
+    options: SessionOptions,
+    sessionId: string,
+  ): Promise<{ session: AcpSession; method: ReopenMethod }> {
+    const session = new AcpSession(provider, options);
+    await session.init(sessionId);
+    return { session, method: session._reopenMethod! };
+  }
+
+  private async openExisting(
+    agent: ClientConnection["agent"],
+    capabilities: acp.AgentCapabilities | undefined,
+    sessionId: string,
+    mcpServers: acp.McpServer[],
+  ): Promise<NewSessionResponse> {
+    const request = { sessionId, cwd: this.options.cwd, mcpServers };
+    try {
+      if (capabilities?.sessionCapabilities?.resume) {
+        this._reopenMethod = "session/resume";
+        const response = await agent.request(acp.methods.agent.session.resume, request);
+        return { sessionId, configOptions: (response as acp.ResumeSessionResponse | null)?.configOptions };
+      }
+      if (capabilities?.loadSession) {
+        this._reopenMethod = "session/load";
+        this.replaying = true;
+        const response = await agent.request(acp.methods.agent.session.load, request);
+        this.replaying = false;
+        return { sessionId, configOptions: (response as acp.ResumeSessionResponse | null)?.configOptions };
+      }
+    } catch (error) {
+      if (error instanceof acp.RequestError && error.code === -32002) {
+        throw new SessionUnavailable(`${this.provider.id}: session ${sessionId} is not available (${error.message})`);
+      }
+      throw error;
+    }
+    throw new SessionUnavailable(`${this.provider.id}: the agent can neither resume nor load a session`);
+  }
+
+  private async init(resumeId?: string): Promise<void> {
     const { command, args } = this.provider;
     this.acpLog(`spawn ${command} ${args.join(" ")}`);
 
@@ -437,7 +482,9 @@ export class AcpSession {
       };
       let session: NewSessionResponse;
       try {
-        session = await live.agent.request(acp.methods.agent.session.new, newSession);
+        session = resumeId
+          ? await this.openExisting(live.agent, initialized.agentCapabilities, resumeId, mcpServers)
+          : await live.agent.request(acp.methods.agent.session.new, newSession);
       } catch (error) {
         if (!(error instanceof acp.RequestError) || error.code !== -32000) throw error;
         const methods = (initialized.authMethods ?? []).map((m) => m.id).join(", ");
@@ -445,7 +492,7 @@ export class AcpSession {
       }
       this._sessionId = session.sessionId;
       this._offeredModels = offeredModels(session);
-      this.acpLog(`session ${session.sessionId} (${mcpServers.length} mcp)`);
+      this.acpLog(`session ${session.sessionId} (${mcpServers.length} mcp)${resumeId ? ` via ${this._reopenMethod}` : ""}`);
 
       if (this.options.model) {
         this._effectiveModel = await applyModel(
@@ -470,6 +517,7 @@ export class AcpSession {
       }
       const reason = exitReason;
       await this.close();
+      if (error instanceof SessionUnavailable) throw error;
       if (reason) {
         throw new Error(reason);
       }
@@ -493,6 +541,10 @@ export class AcpSession {
   private handleUpdate(params: { update?: unknown }): void {
     const update = asRecord(params.update) ?? {};
     const line = formatUpdate(update, this.toolNames);
+    if (this.replaying) {
+      if (line) this.acpLog(`replay ${line}`);
+      return;
+    }
     if (line) this.acpLog(line);
 
     const chunk = extractText(update);
