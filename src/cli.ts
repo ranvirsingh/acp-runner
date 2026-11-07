@@ -13,6 +13,7 @@ import { pickAllowOption, pickRejectOption } from "./runtime/session.js";
 import { loadAgentYaml, resolveRunbookPath } from "./config/yaml.js";
 import { stateLog, stepLog } from "./output/logs.js";
 import { RunRecorder } from "./output/record.js";
+import { createTelemetry } from "./output/telemetry.js";
 import { runAgent, type AgentRunResult } from "./index.js";
 import { lintCommand } from "./config/lint.js";
 import { planCommand } from "./config/plan.js";
@@ -175,7 +176,8 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     state = { dir: args.state, journal: createJournal(journalWriter(args.state)), events: readJournal(args.state) };
   }
 
-  const recorder = new RunRecorder(config);
+  const telemetry = createTelemetry({ env: process.env, providers: config.runbook.providers });
+  const recorder = new RunRecorder(config, undefined, telemetry);
   recorder.start();
 
   let loggedStep = -1;
@@ -234,6 +236,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
       releaseLock(state.dir, process.pid);
     }
     recorder.end(runOutcome === "finished" ? "finished" : "failed", lastError ?? null);
+    await telemetry?.shutdown();
   }
 
   if (state) {

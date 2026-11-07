@@ -361,6 +361,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       session = reopened.session;
       context.sessionId = target.sessionId;
       context.effectiveModel = reopened.session.effectiveModel;
+      context.agentInfo = reopened.session.agentInfo;
       await record({
         event: "session_resumed", step: stepId, visit,
         provider: target.provider, sessionId: target.sessionId, method: reopened.method,
@@ -429,6 +430,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       session = await AcpSession.spawn(spec, sessionOptions(targetServers));
       context.sessionId = session.sessionId;
       context.effectiveModel = session.effectiveModel;
+      context.agentInfo = session.agentInfo;
       context.lastError = undefined;
       return "new";
     } catch (err: any) {
@@ -509,6 +511,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       const currentStep = config.runbook.steps[context.stepIndex];
       context.failure = undefined;
       context.stepExitCode = null;
+      context.usage = undefined;
       const resumed = entry;
       entry = "fresh";
       if (resumed === "fresh") {
@@ -585,6 +588,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
             } finally {
               if (state && proxy) callsInVisit = (await proxy.closeTurn()) - 1;
             }
+            context.usage = session!.lastUsage;
             await record({
               event: "prompt_completed", step: currentStep.id, visit, stopReason: session!.stopReason,
               ...(feedback ? { feedback } : {}),

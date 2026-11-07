@@ -21,6 +21,7 @@ import { isScriptStep, tracesToFile, tracesToStdout } from "../types.js";
 import { toolNameFromUpdate } from "./logs.js";
 import { resolveModel, resolveStepServers } from "../config/yaml.js";
 import { createRedactor } from "./redact.js";
+import type { Telemetry } from "./telemetry.js";
 
 export function createRunId(date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -63,9 +64,11 @@ export class RunRecorder {
   private lastModel?: string;
   private started = false;
   private ended = false;
+  private readonly telemetry: Telemetry | null;
 
-  constructor(config: RunnerConfig, runId = createRunId()) {
+  constructor(config: RunnerConfig, runId = createRunId(), telemetry: Telemetry | null = null) {
     this.config = config;
+    this.telemetry = telemetry;
     this.redact = createRedactor(config);
     this.runId = runId;
     this.startTime = Date.now();
@@ -91,6 +94,7 @@ export class RunRecorder {
     if (tracesToStdout(this.config.trace)) {
       console.log(line);
     }
+    this.telemetry?.record(JSON.parse(line));
     if (this.fileDescriptor !== null && !this.fileDisabled) {
       try {
         writeSync(this.fileDescriptor, line + "\n", undefined, "utf8");
@@ -142,11 +146,12 @@ export class RunRecorder {
           status: "pending",
           step: currentStepId,
           ms: null,
+          call: id || null,
         };
         this.emit(toolEv);
       } else if (kind === "tool_call_update") {
         const status = update.status;
-        if (typeof status === "string") {
+        if (status === "completed" || status === "failed") {
           const name = (id && this.toolNames.get(id)) || toolNameFromUpdate(update) || "tool";
           const start = id ? this.toolStartTimes.get(id) : undefined;
           const ms = start ? Date.now() - start : null;
@@ -155,9 +160,10 @@ export class RunRecorder {
             run: this.runId,
             ev: "tool",
             name,
-            status: status === "failed" ? "failed" : "completed",
+            status,
             step: currentStepId,
             ms,
+            call: id || null,
           };
           this.emit(toolEv);
         }
@@ -219,6 +225,7 @@ export class RunRecorder {
         exit: context.stepExitCode ?? null,
         feedback: truncated.feedback,
         ...(truncated.truncated ? { feedback_truncated: true } : {}),
+        ...this.sessionDetail(context),
       };
       this.emit(stepEndEv);
       this.activeStep = null;
@@ -264,6 +271,17 @@ export class RunRecorder {
       why,
     };
     this.emit(transEv);
+  }
+
+  private sessionDetail(context: SessionContext): Pick<StepEndEvent, "session" | "agent" | "model" | "usage"> {
+    const step = this.config.runbook.steps.find((s) => s.id === this.activeStep?.stepId);
+    if (!step || isScriptStep(step)) return { session: null, agent: null, model: null, usage: null };
+    return {
+      session: context.sessionId ?? null,
+      agent: context.agentInfo ?? null,
+      model: context.effectiveModel ?? null,
+      usage: context.usage ?? null,
+    };
   }
 
   end(outcome: "finished" | "failed", error?: string | null): void {

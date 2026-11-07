@@ -234,6 +234,59 @@ The runbook hash covers `agent.yaml`, each `do: { file }` and each `vars` file. 
 
 `SIGINT` and `SIGTERM` stop a run with `--state` cleanly and exit 75. With `--state`, the runner starts itself again as the leader of a new process group, so that it can stop every agent, script and MCP server process that the run started.
 
+## OpenTelemetry export
+
+The runner can send each run to any OTLP collector as traces and logs. Export is off until you set an endpoint:
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.example.com \
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20<token>" \
+acp-runner run ./my-agent
+```
+
+The runner sends OTLP/HTTP with JSON bodies to `<endpoint>/v1/traces` and `<endpoint>/v1/logs`. It reads these variables:
+
+| Variable | Effect |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base URL for both signals. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Full URL for one signal. A signal without an endpoint is not sent. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, `OTEL_EXPORTER_OTLP_LOGS_HEADERS` | `key=value` pairs, separated by commas and URL-encoded. A signal header replaces a shared header with the same key. |
+| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | Resource attributes. The default service name is `acp-runner`. |
+| `TRACEPARENT`, `TRACESTATE` | A W3C trace context. The run becomes a child of this span, so that several runs can share one trace. |
+| `OTEL_SDK_DISABLED=true` | Turns export off. |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` | Adds step failure output and the run error to the logs. These are off by default. |
+
+**Spans.** The spans follow the [OpenTelemetry GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai). These conventions have Development status and can change.
+
+| Runner part | Span name | Kind | `gen_ai.operation.name` |
+|---|---|---|---|
+| Run | `invoke_workflow <runbook name>` | INTERNAL | `invoke_workflow` |
+| Model step | `invoke_agent <provider>` | CLIENT | `invoke_agent` |
+| Script step | `step <step id>` | INTERNAL | none |
+| Tool call that the agent reports | `execute_tool <tool name>` | INTERNAL | `execute_tool` |
+
+Each step attempt gets its own span. A provider swap is a span event on the run span. A failed span has status ERROR and an `error.type` of `exit_nonzero`, `incomplete` (a tool call that did not finish before its step ended) or `_OTHER`. A model step span carries the ACP session ID as `gen_ai.conversation.id`. It also carries the token usage when the agent reports it, and the agent name and version as `acp.agent.name` and `acp.agent.version`.
+
+**`gen_ai.provider.name`.** The runner selects the first value that it finds:
+
+1. `otel.providerName` on the provider in `agent.yaml`.
+2. The name that the agent reports when it starts. `@agentclientprotocol/claude-agent-acp` gives `anthropic`, `@agentclientprotocol/codex-acp` gives `openai` and `gemini-cli` gives `gcp.gen_ai`.
+3. The provider ID from `agent.yaml`.
+
+```yaml
+providers:
+  bedrock-proxy:
+    command: npx
+    args: [-y, my-acp-proxy]
+    model: claude-sonnet
+    otel:
+      providerName: aws.bedrock
+```
+
+**Logs.** Each run-record event is also one log record, with `eventName` set to `acp.<event>`. Logs arrive while a step runs. A span arrives only when it ends. Transitions use severity DEBUG, and failures use ERROR.
+
+**Failures in export.** Export never fails a run. The runner sends a batch every two seconds. It writes one warning when a collector refuses or rejects data, and it does not retry. The queue holds 2048 records for each signal and drops the oldest records when it is full. At the end of a run, the runner waits up to three seconds for the last batch.
+
 ## Security
 
 Run only workflows, providers and MCP servers that you trust. Shell steps run directly on your machine. Shell steps and local MCP servers inherit your environment, which can contain credentials.
@@ -249,6 +302,8 @@ Secrets that the runbook reads as `${{ secrets.NAME }}` are kept away from the a
 - An agent process does not get these environment variables. The runner puts the values into MCP headers and MCP server `env` itself. The agent keeps its own login, for example `CLAUDE_CODE_OAUTH_TOKEN`.
 - Before the runner sends a prompt, it replaces each known secret value in the prompt text and in the attached check output with `[REDACTED]`.
 - The MCP proxy refuses a tool call when the arguments contain a known secret value. The runner logs the tool name, but not the value.
+
+Agent processes also do not get the `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `OTEL_EXPORTER_OTLP_LOGS_HEADERS` variables, because these usually hold the collector credential. OpenTelemetry export uses the same redacted events as the run trace.
 
 These controls do not stop an agent that finds a secret another way, for example in a file or through a built-in tool that does not use the proxy. They also do not detect encoded or partial forms of a secret.
 

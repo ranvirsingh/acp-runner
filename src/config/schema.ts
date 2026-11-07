@@ -8,6 +8,7 @@ const providerDeclaration = z
     command: z.string().min(1),
     args: z.array(z.string()).optional(),
     model: z.string().min(1),
+    otel: z.object({ providerName: z.string().min(1).optional() }).strict().optional(),
   })
   .strict();
 
