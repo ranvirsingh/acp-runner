@@ -527,6 +527,18 @@ Effect on the design:
 - **7.7 step 7 and codex-acp 2.5.0.** codex-acp reports a missing session as `-32603`, so the runner reads it as "any other error" and exits 75. It does not reach "session unavailable" (A5a, A5b, A5e) with this adapter. A missing Codex store therefore gives exit 75 on every attempt, not `unknown`. The runner keeps the mapping in 7.7 as written (exit 75 is the safe side). This is reported to the coordinator as a finding. The fixture tests use `-32002` as the plan says.
 - **7.9 and Engineer.** The ledger treats a tool with no annotations as one that may change something outside. So every `observability` and `gcloud` call in Engineer gets `tool_started` and `tool_completed`, and a crash during one of them stops the run as `unknown`, reason `tool_in_doubt`. Only `inspect_configuration` is skipped. Engineer's integration (phase 8) must accept this or get annotations upstream.
 
+### 10.2 Implementation notes (2026-11-07)
+
+Phases 0–7 are built on branch `durable-recovery-df69a1`. These points are not in the sections above:
+
+- **SIGTERM** stops a run only when `--state` is given. Without `--state`, the runner keeps today's behavior, as section 5 requires.
+- **Process-group re-start.** The outer process sets `ACP_RUNNER_GROUP_LEADER=1` for the inner process. This is an internal marker, not a test hook. After the inner process exits, the outer process sends `SIGTERM` to the inner process group. The inner process also signals its own group before it releases the lock.
+- **Stopped commands.** When the runner stops a script or a check (signal or timeout), it resolves on the child's `exit` event. It does not wait for a grandchild that holds the output pipe. The group stop ends that grandchild.
+- **Feedback files** are named `feedback/<step>-<visit>.json` after the visit that produced the failure.
+- **A15** is tested in `tests/mcp/proxy.test.ts` (second call refused before it is forwarded, drain waits for the first). The engine-level exit 75 after a failed proxy append is covered by the first run of A10.
+- **D13 fix.** A session recovered from the journal is dropped on any swap that the new process decides, so a later step of the same provider opens a new session.
+- **Prompt errors.** With `--state`, a prompt error is an infrastructure failure (exit 75) when the agent process is closed, the error is not an ACP `RequestError`, or the code is `-32000`. Other `RequestError`s fail the step with `why: null`.
+
 Phase 4 cases taken from the engine:
 
 - `retry` on a step, and `on.failure` taking precedence over `retry`.
