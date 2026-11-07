@@ -149,6 +149,12 @@ export class McpProxy {
     return result as { content: unknown; isError?: boolean };
   }
 
+  async isIdempotent(server: string, tool: string): Promise<boolean> {
+    await this.ensureClient(server).catch(() => {});
+    const found = this.catalogue.get(server)?.find((item) => item.name === tool);
+    return found?.annotations?.idempotentHint === true;
+  }
+
   async readResource(server: string, uri: string): Promise<string> {
     const client = await this.ensureClient(server);
     const result = await client.readResource({ uri });

@@ -9,7 +9,8 @@ import { AcpSession } from "./session.js";
 import { buildPrompt } from "./failure.js";
 import { commandResult, type CommandResult } from "./command-result.js";
 import { RequestError } from "@agentclientprotocol/sdk";
-import { inputsHash, runbookHash, writeFeedback, type Journal, type JournalEvent } from "./journal.js";
+import { inputsHash, readFeedback, runbookHash, writeFeedback, type Journal, type JournalEvent } from "./journal.js";
+import { recover, unfinishedTools, type RecoveryAction } from "./recovery.js";
 import { RUNNER_VERSION } from "../version.js";
 import {
   isScriptStep,
@@ -57,6 +58,10 @@ export interface AgentRunResult {
 }
 
 class StopRun extends Error {}
+
+class UnknownOutcome extends Error {}
+
+type Entry = "fresh" | Extract<RecoveryAction, { action: "continue" }>["mode"];
 
 function runCommand(
   command: string,
@@ -372,6 +377,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
   };
 
   try {
+    let entry: Entry = "fresh";
     if (state && state.events.length === 0) {
       await record({
         event: "run_started",
@@ -381,6 +387,39 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
         runner: RUNNER_VERSION,
         cwd: config.cwd,
       });
+    } else if (state) {
+      const idempotent = new Set<string>();
+      for (const call of unfinishedTools(state.events)) {
+        if (await proxy?.isIdempotent(call.server, call.tool)) idempotent.add(`${call.server}\0${call.tool}`);
+      }
+      const plan = recover(state.events, config, (server, tool) => idempotent.has(`${server}\0${tool}`));
+      Object.assign(visits, plan.visits);
+      context.loopCounts = plan.loopCounts;
+      if (plan.feedback) {
+        context.pendingFailure = readFeedback(state.dir, plan.feedback);
+        savedFeedback = { failure: context.pendingFailure, path: plan.feedback };
+      }
+      context.provider = plan.provider;
+      const next = plan.next;
+      if (next.action === "done") {
+        context.lastError = next.reason;
+        return { outcome: next.outcome, context, ...(next.reason ? { reason: next.reason } : {}) };
+      }
+      if (next.action === "finish") {
+        await record({ event: "run_finished", outcome: next.outcome });
+        return { outcome: next.outcome, context };
+      }
+      if (next.action === "unknown") throw new UnknownOutcome(next.reason);
+      if (next.action === "start" || next.action === "continue") {
+        const step = config.runbook.steps[next.stepIndex];
+        context.stepIndex = next.stepIndex;
+        context.prompt = resolveStepPrompt(config, step);
+        context.mcpServers = resolveStepServers(config, step);
+      }
+      if (next.action === "continue") {
+        entry = next.mode;
+        visit = next.visit;
+      }
     }
 
     let runFinished = false;
@@ -399,9 +438,13 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       const currentStep = config.runbook.steps[context.stepIndex];
       context.failure = undefined;
       context.stepExitCode = null;
-      visit = (visits[currentStep.id] ?? 0) + 1;
-      visits[currentStep.id] = visit;
-      await record({ event: "step_started", step: currentStep.id, visit });
+      const resumed = entry;
+      entry = "fresh";
+      if (resumed === "fresh") {
+        visit = (visits[currentStep.id] ?? 0) + 1;
+        visits[currentStep.id] = visit;
+        await record({ event: "step_started", step: currentStep.id, visit });
+      }
 
       let inputVars: Record<string, string> = {};
       let inputsFailed = false;
@@ -420,6 +463,15 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       }
 
       if (inputsFailed) {
+      } else if (resumed === "check") {
+        if (currentStep.run) {
+          const checkResult = await runStepCheck(config, currentStep, inputVars, signal);
+          stopIfAborted();
+          applyCheckResult(context, currentStep, checkResult);
+        } else {
+          context.stepOutcome = "success";
+        }
+        transitionTo("choosingNext");
       } else if (isScriptStep(currentStep)) {
         transitionTo("executingScript");
         const checkResult = await runStepCheck(config, currentStep, inputVars, signal);
@@ -562,6 +614,18 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     transitionTo("finished");
     return { outcome: "finished", context };
   } catch (error) {
+    if (error instanceof UnknownOutcome) {
+      await closeSession();
+      try {
+        await record({ event: "run_finished", outcome: "unknown", reason: error.message });
+      } catch (recordError) {
+        if (!(recordError instanceof StopRun)) throw recordError;
+        return { outcome: "stopped", context, reason: recordError.message };
+      }
+      context.lastError = error.message;
+      transitionTo("unknown");
+      return { outcome: "unknown", context, reason: error.message };
+    }
     if (!(error instanceof StopRun)) throw error;
     context.lastError = error.message;
     transitionTo("shuttingDown");
