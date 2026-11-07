@@ -315,22 +315,32 @@ test("runAgent: abort still ends the run when the agent ignores cancel", async (
   }
 });
 
-test("runStepCheck: a run timeout bounds the command", () => {
+test("runStepCheck: a run timeout bounds the command", async () => {
   const config = configFor({ steps: [] });
-  const result = runStepCheck(config, {
+  const result = await runStepCheck(config, {
     id: "check",
     run: { command: "node -e 'setTimeout(() => {}, 500)'", timeout: 50 },
   });
   assert.equal(result.outcome, "failure");
 });
 
-test("runStepCheck: ACP_RUNNER_STEP_TIMEOUT does not change the default", () => {
+test("runStepCheck: ACP_RUNNER_STEP_TIMEOUT does not change the default", async () => {
   const config = configFor({ steps: [] });
   process.env.ACP_RUNNER_STEP_TIMEOUT = "50";
   try {
-    const result = runStepCheck(config, { id: "check", run: "node -e 'setTimeout(() => {}, 500)'" });
+    const result = await runStepCheck(config, { id: "check", run: "node -e 'setTimeout(() => {}, 500)'" });
     assert.equal(result.outcome, "success");
   } finally {
     delete process.env.ACP_RUNNER_STEP_TIMEOUT;
   }
+});
+
+test("runStepCheck: an abort during a long command stops it promptly", async () => {
+  const config = configFor({ steps: [] });
+  const controller = new AbortController();
+  const started = Date.now();
+  setTimeout(() => controller.abort(), 200);
+  const result = await runStepCheck(config, { id: "check", run: "sleep 5" }, undefined, controller.signal);
+  assert.equal(result.outcome, "failure");
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started}ms`);
 });

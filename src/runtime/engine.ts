@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { decideAfterSuccess } from "./decide.js";
@@ -45,13 +45,42 @@ export interface AgentRunResult {
   context: SessionContext;
 }
 
-export function runStepCheck(
+function runCommand(
+  command: string,
+  args: string[],
+  options: SpawnOptions & { timeout: number; signal?: AbortSignal },
+): Promise<CommandResult> {
+  const { timeout, signal, ...spawnOptions } = options;
+  return new Promise((resolveResult) => {
+    const child = spawn(command, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let error: Error | undefined;
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    const stop = (reason: Error) => {
+      error ??= reason;
+      child.kill("SIGTERM");
+    };
+    const timer = setTimeout(() => stop(new Error(`${command} ETIMEDOUT`)), timeout);
+    const onAbort = () => stop(new Error("aborted"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.once("error", (spawnError) => { error ??= spawnError; });
+    child.once("close", (status, killSignal) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolveResult(commandResult({ status, signal: killSignal, error, stdout, stderr }));
+    });
+  });
+}
+
+export async function runStepCheck(
   config: RunnerConfig,
   step?: AgentStep,
   extraVars?: Record<string, unknown>,
   signal?: AbortSignal,
   timeout?: number,
-): CommandResult {
+): Promise<CommandResult> {
   const rawCommand = step?.run;
   if (!rawCommand || !step) return { outcome: "success", output: "", exitCode: null };
   if (signal?.aborted) {
@@ -70,7 +99,6 @@ export function runStepCheck(
   const stepVars = resolveStepVariables(config, step, extraVars);
 
   try {
-    let result: ReturnType<typeof spawnSync>;
     if (typeof rawCommand === "object" && rawCommand !== null && "command" in rawCommand) {
       const command = renderPromptTemplate(rawCommand.command, stepVars);
       const args = (rawCommand.args ?? []).map((a) => renderPromptTemplate(a, stepVars));
@@ -82,10 +110,8 @@ export function runStepCheck(
         const candidate = resolve(baseDir, arg);
         return existsSync(candidate) ? candidate : arg;
       });
-      result = spawnSync(resolvedCommand, resolvedArgs, {
+      return await runCommand(resolvedCommand, resolvedArgs, {
         cwd: workingDir,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, ...stepVars, RUNBOOK_DIR: baseDir },
         signal,
         timeout: effectiveTimeout,
@@ -105,11 +131,9 @@ export function runStepCheck(
             })
             .join(" ")
         : renderedCommand;
-      result = spawnSync(command, {
+      return await runCommand(command, [], {
         cwd: workingDir,
-        encoding: "utf8",
         shell: true,
-        stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
           ...stepVars,
@@ -120,8 +144,6 @@ export function runStepCheck(
         timeout: effectiveTimeout,
       });
     }
-
-    return commandResult(result);
   } catch (error: any) {
     return commandResult({ ...error, error });
   }
@@ -138,7 +160,7 @@ function setFailure(context: SessionContext, failure: StepFailure, preservePendi
   if (!preservePending || !context.pendingFailure) context.pendingFailure = failure;
 }
 
-function applyCheckResult(context: SessionContext, step: AgentStep, result: ReturnType<typeof runStepCheck>): void {
+function applyCheckResult(context: SessionContext, step: AgentStep, result: CommandResult): void {
   const source = commandSource(step.run!);
   context.stepOutcome = result.outcome;
   context.stepExitCode = result.exitCode;
@@ -332,7 +354,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       if (inputsFailed) {
       } else if (isScriptStep(currentStep)) {
         transitionTo("executingScript");
-        const checkResult = runStepCheck(config, currentStep, inputVars, signal);
+        const checkResult = await runStepCheck(config, currentStep, inputVars, signal);
         applyCheckResult(context, currentStep, checkResult);
         transitionTo("choosingNext");
       } else {
@@ -352,7 +374,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
             context.turnIndex += 1;
 
             if (currentStep.run) {
-              const checkResult = runStepCheck(config, currentStep, inputVars, signal);
+              const checkResult = await runStepCheck(config, currentStep, inputVars, signal);
               applyCheckResult(context, currentStep, checkResult);
             } else {
               context.stepOutcome = "success";
