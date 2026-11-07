@@ -341,3 +341,53 @@ test("ledger: a live run records tool calls inside the turn and numbers them per
     assert.ok(order.lastIndexOf("tool_completed work 1") < order.indexOf("prompt_completed work 1"));
   });
 });
+
+test("A7: after a failed append the next runner recovers from the prefix on disk", async () => {
+  const p = builderProject([{ id: "work", provider: "builder", do: "Work" }]);
+  const first = await runOnce(p.config, p.dir, (event) => event.event === "session_attached");
+  assert.equal(first.result.outcome, "stopped");
+  const second = await runOnce(p.config, p.dir);
+  assert.equal(second.result.outcome, "finished");
+});
+
+function stepTrail(events: JournalEvent[]): string[] {
+  return events.flatMap((event) => (event.event === "step_completed" ? [`${event.step}:${event.visit}:${event.outcome}:${event.why}:${event.next}`] : []));
+}
+
+test("recovery: loop counts rebuilt after a stop at every step give the same trail as one process (retry, maxAttempts, fallback)", async () => {
+  const steps = (dir: string): AgentYaml["steps"] => [
+    { id: "flaky", run: `sh -c 'echo x >> "${join(dir, "flaky")}"; test $(wc -l < "${join(dir, "flaky")}") -ge 3'`, retry: { maxAttempts: 5 } },
+    { id: "gate", run: "false", on: { failure: { target: "gate", maxAttempts: 2, fallback: "after" } } },
+    { id: "after", run: "true", on: { success: "END" } },
+  ];
+  const once = project((dir) => ({ steps: steps(dir) }));
+  const single = await runOnce(once.config, once.dir);
+  assert.equal(single.result.outcome, "finished");
+
+  const crashing = project((dir) => ({ steps: steps(dir) }));
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const run = await runOnce(crashing.config, crashing.dir, (event) => event.event === "step_completed");
+    if (run.result.outcome !== "stopped") break;
+  }
+  const events = readJournal(crashing.dir);
+  assert.equal(events.at(-1)?.event, "run_finished");
+  assert.deepEqual(stepTrail(events), stepTrail(readJournal(once.dir)));
+});
+
+test("recovery: a stop right after each recovery append still sends exactly one resend", async () => {
+  const p = builderProject(passback);
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume" }, async () => {
+    await runOnce(p.config, p.dir, (event) => event.event === "session_attached" && event.visit === 2);
+    const afterAttach = await runOnce(p.config, p.dir, (event) => event.event === "session_resumed");
+    assert.deepEqual(names(afterAttach.added), ["session_resumed implement 2"]);
+    const afterResume = await runOnce(p.config, p.dir, (event) => event.event === "prompt_sent");
+    assert.deepEqual(names(afterResume.added), ["session_resumed implement 2", "prompt_sent implement 2"]);
+    assert.equal((afterResume.added[1] as { kind: string }).kind, "step");
+    const resendStop = await runOnce(p.config, p.dir, (event) => event.event === "session_resumed");
+    assert.deepEqual(names(resendStop.added), ["session_resumed implement 2"]);
+    const last = await runOnce(p.config, p.dir);
+    assert.equal(last.result.outcome, "finished");
+    const sent = readJournal(p.dir).filter((event) => event.event === "prompt_sent" && event.visit === 2) as Array<{ kind: string }>;
+    assert.deepEqual(sent.map((event) => event.kind), ["step", "resend"]);
+  });
+});
