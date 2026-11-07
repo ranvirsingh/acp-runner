@@ -201,6 +201,26 @@ async function prompt(ctx: any): Promise<acp.PromptResponse> {
         ? "x".repeat(256 * 1024)
         : `echo:${promptText}`;
 
+    if (mode === "call-tools") {
+      const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+      const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+      const server = mcpServers.find((server) => "type" in server && server.type === "http");
+      if (!server || !("url" in server)) throw new Error("fixture needs an HTTP MCP server");
+      const client = new Client({ name: "fixture", version: "0.0.0" });
+      const results: unknown[] = [];
+      try {
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url), {
+          requestInit: { headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])) },
+        }));
+        for (const name of (process.env.ACP_FIXTURE_TOOLS ?? "").split(",").filter(Boolean)) {
+          results.push(await client.callTool({ name, arguments: {} }).then((result) => result.content, (error) => String(error)));
+        }
+      } finally {
+        await client.close();
+      }
+      reply = JSON.stringify(results);
+    }
+
     if (mode === "mcp-http") {
       const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
       const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");

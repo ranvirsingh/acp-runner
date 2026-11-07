@@ -278,3 +278,66 @@ test("A17: an agent that dies during a live prompt stops with no step_completed,
     assert.equal((second.added[1] as { kind: string }).kind, "resend");
   });
 });
+
+const ledgerTools = join(fileURLToPath(import.meta.url), "../../fixtures/mcp-tools/tools/ledger.mjs");
+
+function toolProject() {
+  const p = builderProject([{ id: "work", provider: "builder", do: "Work", mcpServers: { ledger: {} } }]);
+  const marker = join(p.dir, "marker");
+  p.config.runbook.mcpServers = { ledger: { command: "node", args: [ledgerTools], env: { LEDGER_MARKER: marker } } };
+  const marked = () => (existsSync(marker) ? readFileSync(marker, "utf8").trim().split("\n") : []);
+  return { ...p, marked };
+}
+
+test("A10: a stop after tool_started for a tool without idempotentHint ends the next run as unknown with no resend", async () => {
+  const p = toolProject();
+  await withEnv({ ACP_FIXTURE_MODE: "call-tools", ACP_FIXTURE_TOOLS: "ledger__act" }, async () => {
+    const first = await runOnce(p.config, p.dir, (event) => event.event === "tool_started");
+    assert.equal(first.result.outcome, "stopped");
+  });
+  assert.equal(names(readJournal(p.dir)).at(-1), "tool_started work 1");
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume" }, async () => {
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "unknown");
+    assert.deepEqual(second.added, [{ event: "run_finished", outcome: "unknown", reason: "tool_in_doubt" }]);
+    assert.equal(p.prompts().length, 1);
+  });
+});
+
+test("A11: a live tool call whose reply is lost ends the run as unknown before step_completed", async () => {
+  const p = toolProject();
+  await withEnv({ ACP_FIXTURE_MODE: "call-tools", ACP_FIXTURE_TOOLS: "ledger__vanish" }, async () => {
+    const first = await runOnce(p.config, p.dir);
+    assert.equal(first.result.outcome, "unknown");
+    assert.deepEqual(p.marked(), ["vanish"]);
+    const events = readJournal(p.dir);
+    assert.ok(!events.some((event) => event.event === "step_completed"));
+    assert.deepEqual(events.at(-1), { event: "run_finished", outcome: "unknown", reason: "tool_in_doubt" });
+  });
+});
+
+test("A12: a stop after tool_started for an idempotentHint tool is not in doubt and the resend goes out", async () => {
+  const p = toolProject();
+  await withEnv({ ACP_FIXTURE_MODE: "call-tools", ACP_FIXTURE_TOOLS: "ledger__label" }, async () => {
+    await runOnce(p.config, p.dir, (event) => event.event === "tool_started");
+  });
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume" }, async () => {
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "finished");
+    const resend = second.added.find((event) => event.event === "prompt_sent") as { kind: string };
+    assert.equal(resend.kind, "resend");
+  });
+});
+
+test("ledger: a live run records tool calls inside the turn and numbers them per visit", async () => {
+  const p = toolProject();
+  await withEnv({ ACP_FIXTURE_MODE: "call-tools", ACP_FIXTURE_TOOLS: "ledger__peek,ledger__act,ledger__act" }, async () => {
+    const run = await runOnce(p.config, p.dir);
+    assert.equal(run.result.outcome, "finished");
+    const tools = run.added.filter((event) => event.event.startsWith("tool_")).map((event) => `${event.event} ${(event as { call: number }).call}`);
+    assert.deepEqual(tools, ["tool_started 1", "tool_completed 1", "tool_started 2", "tool_completed 2"]);
+    const order = names(run.added);
+    assert.ok(order.indexOf("prompt_sent work 1") < order.indexOf("tool_started work 1"));
+    assert.ok(order.lastIndexOf("tool_completed work 1") < order.indexOf("prompt_completed work 1"));
+  });
+});

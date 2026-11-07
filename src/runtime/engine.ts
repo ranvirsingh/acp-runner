@@ -294,10 +294,15 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     return { outcome: state ? "stopped" : "failed", context };
   }
 
+  const written: JournalEvent[] = [...(state?.events ?? [])];
+  let callsInVisit = 0;
+  if (state) proxy?.enableLedger();
+
   const record = async (event: JournalEvent): Promise<void> => {
     if (!state) return;
     try {
       await state.journal.append(event);
+      written.push(event);
     } catch (error) {
       await (session as AcpSession | null)?.cancel().catch(() => {});
       throw new StopRun(`journal write failed (${error instanceof Error ? error.message : String(error)}); the journal may be behind`);
@@ -484,6 +489,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
         entry = next.mode;
         visit = next.visit;
         attachedInVisit = next.attached;
+        callsInVisit = plan.calls;
       }
     }
 
@@ -508,6 +514,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       if (resumed === "fresh") {
         visit = (visits[currentStep.id] ?? 0) + 1;
         visits[currentStep.id] = visit;
+        callsInVisit = 0;
         await record({ event: "step_started", step: currentStep.id, visit });
       }
 
@@ -569,7 +576,15 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
               ...(feedback ? { feedback } : {}),
             });
             const blocks = buildPrompt(redact(prompt), failure);
-            const reply = await session!.prompt(kind === "resend" ? [{ type: "text", text: RESEND_NOTICE }, ...blocks] : blocks);
+            if (state && proxy) {
+              proxy.openTurn({ step: currentStep.id, visit, next: callsInVisit + 1, append: record, failed: () => state.journal.failed });
+            }
+            let reply: string;
+            try {
+              reply = await session!.prompt(kind === "resend" ? [{ type: "text", text: RESEND_NOTICE }, ...blocks] : blocks);
+            } finally {
+              if (state && proxy) callsInVisit = (await proxy.closeTurn()) - 1;
+            }
             await record({
               event: "prompt_completed", step: currentStep.id, visit, stopReason: session!.stopReason,
               ...(feedback ? { feedback } : {}),
@@ -636,6 +651,9 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       }
 
       if (state) {
+        for (const call of unfinishedTools(written)) {
+          if (!(await proxy?.isIdempotent(call.server, call.tool))) throw new UnknownOutcome("tool_in_doubt");
+        }
         const feedback = feedbackPath(currentStep.id);
         await record({
           event: "step_completed", step: currentStep.id, visit,

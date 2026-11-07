@@ -14,12 +14,27 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { ResolvedMcpServer } from "../types.js";
+import type { JournalEvent } from "../runtime/journal.js";
 import { RUNNER_VERSION } from "../version.js";
 import { qualifyToolName, splitToolName, toolAllowed, visibleTools, type StepScope } from "./scope.js";
 
 export const RESOURCE_LIMIT_BYTES = 256 * 1024;
 
 const RUNNER_ENTRY_NAME = "runner";
+
+type ToolResult = { content: unknown; isError?: boolean };
+
+export interface ToolTurn {
+  step: string;
+  visit: number;
+  next: number;
+  append: (event: JournalEvent) => Promise<void>;
+  failed?: () => boolean;
+}
+
+function refusal(text: string): ToolResult {
+  return { isError: true, content: [{ type: "text", text }] };
+}
 
 export class McpProxy {
   private readonly httpToken = randomBytes(32).toString("hex");
@@ -31,6 +46,10 @@ export class McpProxy {
   private stepId = "";
   private httpServer: HttpServer | null = null;
   private readonly log: (message: string) => void;
+  private ledger = false;
+  private ledgerFailed = false;
+  private turn: ToolTurn | null = null;
+  private readonly inFlight = new Set<Promise<unknown>>();
 
   constructor(
     servers: ResolvedMcpServer[],
@@ -115,10 +134,27 @@ export class McpProxy {
     }
   }
 
+  enableLedger(): void {
+    this.ledger = true;
+  }
+
+  openTurn(turn: ToolTurn): void {
+    this.turn = turn;
+  }
+
+  async closeTurn(): Promise<number> {
+    const turn = this.turn;
+    this.turn = null;
+    await Promise.allSettled([...this.inFlight]);
+    return turn?.next ?? 0;
+  }
+
   async callTool(
     qualified: string,
     args: Record<string, unknown> | undefined,
-  ): Promise<{ content: unknown; isError?: boolean }> {
+  ): Promise<ToolResult> {
+    const turn = this.turn;
+    if (this.ledger && !turn) return refusal(`tool "${qualified}" was refused: no agent turn is active`);
     const split = splitToolName(qualified, this.serverNames);
     if (!split || !toolAllowed(this.scope, split.server, split.tool)) {
       return {
@@ -145,8 +181,33 @@ export class McpProxy {
         content: [{ type: "text", text: `server "${split.server}" is not connected` }],
       };
     }
-    const result = await client.callTool({ name: split.tool, arguments: args ?? {} });
-    return result as { content: unknown; isError?: boolean };
+    const forward = async () => (await client.callTool({ name: split.tool, arguments: args ?? {} })) as ToolResult;
+    if (!this.ledger || !turn) return forward();
+    if (this.ledgerFailed || turn.failed?.()) return refusal(`tool "${qualified}" was refused: the run journal failed`);
+    const annotations = this.catalogue.get(split.server)?.find((tool) => tool.name === split.tool)?.annotations;
+    const pending = annotations?.readOnlyHint === true ? forward() : this.recorded(turn, split.server, split.tool, forward);
+    this.inFlight.add(pending);
+    void pending.catch(() => {}).finally(() => this.inFlight.delete(pending));
+    return pending;
+  }
+
+  private async recorded(turn: ToolTurn, server: string, tool: string, forward: () => Promise<ToolResult>): Promise<ToolResult> {
+    const call = turn.next;
+    turn.next += 1;
+    const position = { step: turn.step, visit: turn.visit, call };
+    try {
+      await turn.append({ event: "tool_started", ...position, server, tool });
+    } catch {
+      this.ledgerFailed = true;
+      return refusal(`tool "${server}__${tool}" was refused: the run journal failed`);
+    }
+    const result = await forward();
+    try {
+      await turn.append({ event: "tool_completed", ...position, isError: result.isError === true });
+    } catch {
+      this.ledgerFailed = true;
+    }
+    return result;
   }
 
   async isIdempotent(server: string, tool: string): Promise<boolean> {
