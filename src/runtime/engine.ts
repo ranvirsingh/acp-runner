@@ -76,19 +76,25 @@ function runCommand(
     let error: Error | undefined;
     child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
     child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    let stopped = false;
+    const finish = (status: number | null, killSignal: NodeJS.Signals | null) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolveResult(commandResult({ status, signal: killSignal, error, stdout, stderr }));
+    };
     const stop = (reason: Error) => {
       error ??= reason;
+      stopped = true;
       child.kill("SIGTERM");
     };
     const timer = setTimeout(() => stop(new Error(`${command} ETIMEDOUT`)), timeout);
     const onAbort = () => stop(new Error("aborted"));
     signal?.addEventListener("abort", onAbort, { once: true });
     child.once("error", (spawnError) => { error ??= spawnError; });
-    child.once("close", (status, killSignal) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      resolveResult(commandResult({ status, signal: killSignal, error, stdout, stderr }));
+    child.once("exit", (status, killSignal) => {
+      if (stopped) finish(status, killSignal);
     });
+    child.once("close", finish);
   });
 }
 
