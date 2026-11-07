@@ -391,3 +391,21 @@ test("recovery: a stop right after each recovery append still sends exactly one 
     assert.deepEqual(sent.map((event) => event.kind), ["step", "resend"]);
   });
 });
+
+test("D13: a session recovered from the journal is not reopened after a swap in the new process", async () => {
+  const p = builderProject([
+    { id: "implement", provider: "builder", do: "Implement", on: { success: "check" } },
+    { id: "check", run: "true" },
+    { id: "hop", provider: "reviewer", run: "true" },
+    { id: "again", provider: "builder", do: "Again" },
+  ]);
+  p.config.runbook.providers = { builder: p.provider(), reviewer: p.provider() };
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume" }, async () => {
+    await runOnce(p.config, p.dir, (event) => event.event === "step_completed");
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "finished");
+    const attached = second.added.find((event) => event.event === "session_attached") as { origin: string };
+    assert.equal(attached.origin, "new");
+    assert.ok(!second.added.some((event) => event.event === "session_resumed"));
+  });
+});

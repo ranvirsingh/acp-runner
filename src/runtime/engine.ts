@@ -690,6 +690,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       }
 
       if (context.decision === "swap") {
+        resumable = undefined;
         transitionTo("shuttingDown");
         await closeSession();
         context.shutdownIntent = null;
