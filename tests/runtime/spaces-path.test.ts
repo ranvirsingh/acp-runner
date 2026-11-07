@@ -13,7 +13,7 @@ function createDirWithSpaces(name: string): string {
   return dir;
 }
 
-test("spaces path: structured run executes relative script when runbook directory contains spaces", () => {
+test("spaces path: structured run executes relative script when runbook directory contains spaces", async () => {
   const runbookDir = createDirWithSpaces("runbook dir with spaces");
   const workspaceDir = mkdtempSync(join(tmpdir(), "workspace-"));
   const scriptPath = join(runbookDir, "check.js");
@@ -32,7 +32,7 @@ test("spaces path: structured run executes relative script when runbook director
       runbook: { steps: [] },
     };
 
-    const result = runStepCheck(config, {
+    const result = await runStepCheck(config, {
       id: "check",
       run: {
         command: "node",
@@ -48,7 +48,7 @@ test("spaces path: structured run executes relative script when runbook director
   }
 });
 
-test("spaces path: shell mode preserves quotes and arguments with spaces", () => {
+test("spaces path: shell mode preserves quotes and arguments with spaces", async () => {
   const workspaceDir = mkdtempSync(join(tmpdir(), "workspace-"));
   const outputFile = join(workspaceDir, "output.txt");
 
@@ -59,7 +59,7 @@ test("spaces path: shell mode preserves quotes and arguments with spaces", () =>
       runbook: { steps: [] },
     };
 
-    const result = runStepCheck(config, {
+    const result = await runStepCheck(config, {
       id: "echo",
       run: `node -e 'require("fs").writeFileSync("${outputFile}", "hello world")'`,
     });
@@ -71,7 +71,7 @@ test("spaces path: shell mode preserves quotes and arguments with spaces", () =>
   }
 });
 
-test("spaces path: string run executes relative script when runbook directory contains spaces", () => {
+test("spaces path: string run executes relative script when runbook directory contains spaces", async () => {
   const runbookDir = createDirWithSpaces("runbook dir with spaces");
   const workspaceDir = mkdtempSync(join(tmpdir(), "workspace-"));
   const scriptPath = join(runbookDir, "check.js");
@@ -90,7 +90,7 @@ test("spaces path: string run executes relative script when runbook directory co
       runbook: { steps: [] },
     };
 
-    const result = runStepCheck(config, {
+    const result = await runStepCheck(config, {
       id: "check",
       run: "node check.js",
     });

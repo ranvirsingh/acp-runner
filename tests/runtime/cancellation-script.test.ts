@@ -42,7 +42,7 @@ test("cancellation: a run given an already-aborted signal does not execute scrip
   }
 });
 
-test("cancellation: runStepCheck does not execute command if signal is already aborted", () => {
+test("cancellation: runStepCheck does not execute command if signal is already aborted", async () => {
   const dir = createTempProject();
   const markerPath = join(dir, "step.marker");
   try {
@@ -53,7 +53,7 @@ test("cancellation: runStepCheck does not execute command if signal is already a
     };
     const controller = new AbortController();
     controller.abort();
-    const result = runStepCheck(
+    const result = await runStepCheck(
       config,
       { id: "step", run: `node -e 'require("fs").writeFileSync("${markerPath}", "ran")'` },
       undefined,

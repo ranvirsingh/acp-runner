@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAgentActor, runAgent, RUNNER_VERSION } from "../src/index.ts";
+import { AcpSession, SessionUnavailable } from "../src/runtime/session.ts";
 import type { AgentYaml, ProviderId, RunnerConfig } from "../src/types.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -53,7 +54,7 @@ async function runFixture(
   bins: string,
   options: Parameters<typeof config>[0],
   extra: Partial<RunnerConfig> = {},
-): Promise<{ outcome: "finished" | "failed"; turnText: string; lastError?: string }> {
+): Promise<{ outcome: string; turnText: string; lastError?: string }> {
   let turnText = "";
   const result = await withPath(bins, () =>
     runAgent({
@@ -447,4 +448,62 @@ test("acp fixture: the runner identifies itself as acp-runner at its real versio
     rmSync(bins, { recursive: true, force: true });
     delete process.env.ACP_FIXTURE_MODE;
   }
+});
+
+describe("AcpSession.reopen", () => {
+  const spec = { id: "builder", command: "bun", args: [fixture], model: "test-model" };
+  const cwd = mkdtempSync(join(tmpdir(), "acp-reopen-"));
+
+  async function reopenWith(env: Record<string, string>) {
+    const calls = join(mkdtempSync(join(tmpdir(), "acp-calls-")), "calls.jsonl");
+    const saved = { ...process.env };
+    Object.assign(process.env, env, { ACP_FIXTURE_CALLS: calls });
+    try {
+      const outcome = await AcpSession.reopen(spec, { cwd, model: "test-model", quiet: true }, "sess_old")
+        .then(async ({ session, method }) => {
+          const reply = await session.prompt([{ type: "text", text: "hello" }]);
+          const sessionId = session.sessionId;
+          await session.close();
+          return { method, reply, sessionId } as const;
+        })
+        .catch((error: unknown) => ({ error }));
+      const methods = existsSync(calls)
+        ? readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { method: string; sessionId?: string })
+        : [];
+      return { outcome, methods };
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+    }
+  }
+
+  test("uses session/resume when the agent advertises it", async () => {
+    const { outcome, methods } = await reopenWith({ ACP_FIXTURE_REOPEN: "both" });
+    assert.deepEqual(outcome, { method: "session/resume", reply: "echo:hello", sessionId: "sess_old" });
+    assert.deepEqual(methods.map((call) => call.method), ["initialize", "session/resume", "session/prompt"]);
+    assert.equal(methods[1].sessionId, "sess_old");
+  });
+
+  test("uses session/load when only loadSession is advertised and keeps the replay out of the turn text", async () => {
+    const { outcome, methods } = await reopenWith({ ACP_FIXTURE_REOPEN: "load" });
+    assert.deepEqual(outcome, { method: "session/load", reply: "echo:hello", sessionId: "sess_old" });
+    assert.deepEqual(methods.map((call) => call.method), ["initialize", "session/load", "session/prompt"]);
+  });
+
+  test("is unavailable when the agent can neither resume nor load", async () => {
+    const { outcome, methods } = await reopenWith({ ACP_FIXTURE_REOPEN: "none" });
+    assert.ok("error" in outcome && outcome.error instanceof SessionUnavailable);
+    assert.deepEqual(methods.map((call) => call.method), ["initialize"]);
+  });
+
+  test("is unavailable when the agent answers -32002, and does not try session/load after a failed resume", async () => {
+    const { outcome, methods } = await reopenWith({ ACP_FIXTURE_REOPEN: "both", ACP_FIXTURE_REOPEN_ERROR: "not-found" });
+    assert.ok("error" in outcome && outcome.error instanceof SessionUnavailable);
+    assert.deepEqual(methods.map((call) => call.method), ["initialize", "session/resume"]);
+  });
+
+  test("a login error is not an unavailable session", async () => {
+    const { outcome } = await reopenWith({ ACP_FIXTURE_REOPEN: "resume", ACP_FIXTURE_REOPEN_ERROR: "auth" });
+    assert.ok("error" in outcome && !(outcome.error instanceof SessionUnavailable));
+  });
 });

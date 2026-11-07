@@ -120,6 +120,17 @@ Goal: "Review open GitHub pull requests and update the Jira issue"
 | Prompt content | Each prompt step needs its own `do`. The runner does not take a goal from the command line. |
 | After a swap | The new provider has no history of the earlier steps. Write a prompt that names the files in the workspace. |
 
+### Recovery with `--state`
+
+A caller can run the agent with `acp-runner run --state <dir>`, so that a later run continues a stopped run. Design every agent so that this is safe:
+
+| Rule | Reason |
+| --- | --- |
+| Make each script step and each check safe to run twice. | A stop during a script step runs the script again. |
+| Expect that an agent step can receive its prompt a second time. | After a stop during a model turn, the runner reopens the session and sends the step prompt once more. |
+| Do actions outside the workspace through MCP tools only, not shell commands. | The runner records MCP tool calls. It cannot see shell commands or other built-in agent tools. |
+| Give each custom MCP tool `readOnlyHint: true` or `idempotentHint: true` when that is true. | A lost result of any other tool stops the run as `unknown`, and a person must decide. |
+
 ## 4. Step shapes
 
 ### A. The check loop
@@ -484,3 +495,5 @@ Do a maximum of 3 fix cycles. If the agent still fails, stop. Show the scores, t
 | Step id `end` or `fail` | The runner reserves these names. | Use names such as `report` or `alert_failure`. |
 | Very large steps | You cannot find which part failed. | Make a new step when the type of work changes or when a separate check applies. |
 | Tools that are not declared | The model fails or uses tools that do not exist. | Find the tools first. Write servers in `tools/`. List the variables in `.env.example`. |
+| A script that is not safe to run twice | With `--state`, a stop during the script runs it again and repeats its effect. | Make the script check its own earlier result first. |
+| Outside actions in shell commands | With `--state`, the runner cannot see them, so a resent prompt can repeat them. | Put outside actions in MCP tools with correct annotations. |

@@ -51,20 +51,20 @@ test("hello-world: the complete runbook lints without vendor credentials", () =>
   assert.deepEqual(lintRunbook(join(example, "agent.yaml")), []);
 });
 
-test("hello-world: release checks require the shipped issue hand-off and correctly grouped notes", () => {
+test("hello-world: release checks require the shipped issue hand-off and correctly grouped notes", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "hello world "));
   try {
     writeFileSync(join(cwd, "release.txt"), "1.2.0\n");
     const config = loadConfig({ yamlPath: join(example, "agent.yaml"), cwd, trace: "off" });
     const check = config.runbook.steps.find((step) => step.id === "verify");
     assert.ok(check);
-    assert.equal(runStepCheck(config, check).outcome, "failure");
+    assert.equal((await runStepCheck(config, check)).outcome, "failure");
     const shipped = JSON.parse(readFileSync(join(example, "tools/issues.json"), "utf8"))
       .filter((issue: { status: string; release: string }) => issue.status === "shipped" && issue.release === "1.2.0");
     const notes = "# Taskboard 1.2.0\n\nFocus on your tasks and keep their order.\n\n## Features\n- TASK-101: Filter by assignee; saved per browser.\n\n## Fixes\n- TASK-102: Task order survives reconnects.\n\n## Upgrade notes\n- TASK-103: CSV uses status instead of state; update import scripts.\n";
     writeFileSync(join(cwd, "issues.json"), JSON.stringify(shipped));
     writeFileSync(join(cwd, "release-notes.md"), notes);
-    assert.equal(runStepCheck(config, check).outcome, "success");
+    assert.equal((await runStepCheck(config, check)).outcome, "success");
     for (const badNotes of [
       "Hello, world!\n",
       notes.replace("TASK-102", "TASK-104"),
@@ -75,13 +75,13 @@ test("hello-world: release checks require the shipped issue hand-off and correct
       notes.replace("## Features", "## Fixes").replace("## Fixes\n- TASK-102", "## Features\n- TASK-102"),
     ]) {
       writeFileSync(join(cwd, "release-notes.md"), badNotes);
-      assert.equal(runStepCheck(config, check).outcome, "failure", badNotes);
+      assert.equal((await runStepCheck(config, check)).outcome, "failure", badNotes);
     }
     writeFileSync(join(cwd, "release-notes.md"), notes);
     writeFileSync(join(cwd, "issues.json"), JSON.stringify(shipped.slice(1)));
-    assert.equal(runStepCheck(config, check).outcome, "failure");
+    assert.equal((await runStepCheck(config, check)).outcome, "failure");
     writeFileSync(join(cwd, "issues.json"), JSON.stringify(shipped.map((issue: object) => ({ ...issue, details: "Invented" }))));
-    assert.equal(runStepCheck(config, check).outcome, "failure");
+    assert.equal((await runStepCheck(config, check)).outcome, "failure");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -95,7 +95,7 @@ test("hello-world: the gate steps fetch no MCP resource", async () => {
   }
 });
 
-test("hello-world: the input gate reports a missing release file and rejects empty and unknown releases", () => {
+test("hello-world: the input gate reports a missing release file and rejects empty and unknown releases", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "release input "));
   cpSync(example, cwd, { recursive: true });
   try {
@@ -103,16 +103,16 @@ test("hello-world: the input gate reports a missing release file and rejects emp
     const check = config.runbook.steps.find((step) => step.id === "check-inputs");
     assert.ok(check);
     rmSync(join(cwd, "release.txt"));
-    const missing = runStepCheck(config, check);
+    const missing = await runStepCheck(config, check);
     assert.equal(missing.outcome, "failure");
     assert.match(missing.output ?? "", /release\.txt/);
     for (const release of ["", "  \n", "9.9.9\n"]) {
       writeFileSync(join(cwd, "release.txt"), release);
-      assert.equal(runStepCheck(config, check).outcome, "failure");
+      assert.equal((await runStepCheck(config, check)).outcome, "failure");
     }
     for (const release of ["1.1.0\n", " 1.2.0 \r\n"]) {
       writeFileSync(join(cwd, "release.txt"), release);
-      assert.equal(runStepCheck(config, check).outcome, "success");
+      assert.equal((await runStepCheck(config, check)).outcome, "success");
     }
   } finally {
     rmSync(cwd, { recursive: true, force: true });

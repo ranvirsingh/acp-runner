@@ -97,13 +97,13 @@ cat "$work/riddle.md" "$work/answer.md"
 
 | Command | What it does |
 | --- | --- |
-| `acp-runner run [folder\|file]` | Runs the workflow. `--cwd <dir>` sets the folder that the agents edit. `--trace off\|file\|stdout\|both` sets where the run trace goes. `--confirm` asks you before each tool call. |
+| `acp-runner run [folder\|file]` | Runs the workflow. `--cwd <dir>` sets the folder that the agents edit. `--state <dir>` keeps a journal so that a later run can continue a stopped run (see [Continue a stopped run](#continue-a-stopped-run)). `--trace off\|file\|stdout\|both` sets where the run trace goes. `--confirm` asks you before each tool call. |
 | `acp-runner lint [folder\|file ...]` | Finds errors in the YAML, the prompt files and the variables. It starts nothing. |
 | `acp-runner plan [folder\|file]` | Prints each step with its agent, model, tools, filled-in prompt, check and next step. It starts nothing. |
 | `acp-runner check [folder\|file]` | Starts each agent, logs in and sets the model. It sends no prompt. |
 | `acp-runner skill install` | Copies the `create-acp-agent` skill to `~/.claude/skills/`. |
 
-A folder argument means the `agent.yaml` in that folder. With no argument, the commands use `./agent.yaml`. Every command exits with code 1 on failure.
+A folder argument means the `agent.yaml` in that folder. With no argument, the commands use `./agent.yaml`. Every command exits with code 1 on failure. `run --state` uses more exit codes (see below).
 
 ## `agent.yaml` at a glance
 
@@ -170,6 +170,69 @@ mcpServers:
 - Conversation history does not carry over to a different agent. Files in the workspace carry the work from step to step.
 - When a check fails, the runner attaches the command output to the next prompt automatically.
 - `Ctrl-C` cancels the current turn cleanly over ACP.
+
+## Continue a stopped run
+
+A run can stop before it finishes: the machine restarts, a CI job is cancelled, or the agent process dies. Give `run` a state directory, and a later run with the same directory continues the work:
+
+```bash
+acp-runner run agent.yaml --cwd "$work" --state "$STATE_ROOT/my-agent/run-42"
+```
+
+The state directory is the run key. Use one directory for each run of one runbook. The runner has no default location. Without `--state`, the runner keeps no journal and behaves as before.
+
+The directory holds:
+
+| File | Content |
+| --- | --- |
+| `agent.state.jsonl` | The journal: one JSON event for each line, written with `fsync` before the action that it allows. It records steps, visits, sessions, prompts, tool calls and outcomes. It holds no prompt text, transcript, tool argument or tool result. |
+| `agent.state.lock` | The writer lock: the host name and the process group of the run. It is valid on one host only. Do not copy it to another host. |
+| `feedback/` | Saved check output that the next prompt must carry. Secret values are redacted. |
+
+A later run with the same `--state` reads the journal and does one of these:
+
+- It continues the open step. For an agent step, it reopens the same ACP session with `session/resume`, or with `session/load` when the agent cannot resume.
+- It starts the next step, when the journal records that the earlier step completed.
+- It prints the recorded outcome and exits, when the run already finished.
+- It stops with outcome `unknown`, when it cannot prove that a repeat is safe. A person must then decide.
+
+If the runner stopped during a model turn, the next run reopens the session and sends the step prompt one more time, after a fixed notice that tells the agent to check its earlier work and not repeat a finished action. If that second turn is interrupted too, the run stops as `unknown`.
+
+### Exit codes with `--state`
+
+| Code | Meaning | What the caller does |
+| --- | --- | --- |
+| 0 | The run finished. | Continue. |
+| 1 | The run failed, or the state was refused: the journal is corrupt, it belongs to another `--cwd`, another host holds the lock, or a saved feedback file is missing. | Treat the run as failed. Keep the state for inspection. |
+| 2 | The outcome is unknown. For example, an MCP tool call that can change something outside started, and its result was lost. | A person checks the outside system and decides. |
+| 3 | The runbook files or the resolved inputs changed since the journal started. | Start again with a new state directory. |
+| 75 | The run stopped and can continue: a stop signal (`SIGINT` or `SIGTERM`), a journal write failure, an agent login failure, an agent that died or did not start, a transport failure, or a previous run of this state that is still alive. | Run again with the same `--state`. |
+
+Any other code, for example 137 after `SIGKILL`, has no recovery meaning. Treat it as a failure, keep the state, and run again by hand.
+
+The runbook hash covers `agent.yaml`, each `do: { file }` and each `vars` file. It does not cover the scripts that `run` calls. The inputs hash covers the resolved `vars`, the values of `${{ env.NAME }}` and the identity of each MCP server (name, command, args, URL and the names of its env and header keys). Secret values are not part of a hash, so a rotated credential does not invalidate the state.
+
+### What must survive between runs
+
+| Item | Where it lives | If it is missing |
+| --- | --- | --- |
+| The state directory | `--state` | The run starts from the beginning. |
+| The agent's session store | Codex (codex-acp 2.5.0): `CODEX_HOME/sessions/` | codex-acp reports a missing session as an internal error, so the runner exits 75. Agents that answer `-32002` give "session unavailable". |
+| The agent's login | For Codex, `CODEX_HOME/auth.json` | Exit 75 until the login is back. |
+| The working directory, at the same absolute path | `--cwd` | Exit 1. |
+| The workspace files, including uncommitted and untracked files | The caller's checkout | The runner cannot detect this. The caller must restore the workspace before it starts the runner. |
+| The runbook and prompt files | The repository | Exit 3. |
+
+### Rules for runbooks that use `--state`
+
+- **Script steps and checks must be safe to run twice.** A stop during a script step runs the script again.
+- **An agent step can receive its prompt a second time** after a stop during a model turn. The resumed session keeps the agent's own record of what it did.
+- **Actions outside the workspace must go through MCP tools.** The runner records each MCP tool call that can change something outside, before and after the call. It cannot see shell commands, `curl` or other built-in agent tools.
+- **Annotate MCP tools.** A tool with `readOnlyHint: true` is not recorded. A tool with `idempotentHint: true` is recorded, but a lost result does not stop the run. Any other tool, also a tool with no annotations, stops the run as `unknown` when its result is lost. The runner trusts the annotations.
+- **A step that reads MCP resource inputs stops as `unknown`** after a stop once its prompt went out, because a new read can differ.
+- **A provider swap always ends the session.** A later step never reopens a session from before a swap.
+
+`SIGINT` and `SIGTERM` stop a run with `--state` cleanly and exit 75. With `--state`, the runner starts itself again as the leader of a new process group, so that it can stop every agent, script and MCP server process that the run started.
 
 ## Security
 

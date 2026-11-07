@@ -1,13 +1,17 @@
-import { spawnSync } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { decideAfterSuccess } from "./decide.js";
 import { collectStepInputs } from "../mcp/inputs.js";
 import { McpProxy } from "../mcp/proxy.js";
 import { providerSpec } from "./providers.js";
-import { AcpSession } from "./session.js";
+import { AcpSession, SessionUnavailable, type SessionOptions } from "./session.js";
 import { buildPrompt } from "./failure.js";
 import { commandResult, type CommandResult } from "./command-result.js";
+import { RequestError } from "@agentclientprotocol/sdk";
+import { inputsHash, readFeedback, runbookHash, writeFeedback, type Journal, type JournalEvent } from "./journal.js";
+import { recover, unfinishedTools, type RecoveryAction } from "./recovery.js";
+import { RUNNER_VERSION } from "../version.js";
 import {
   isScriptStep,
   tracesToStdout,
@@ -36,22 +40,76 @@ export interface CreateAgentActorOptions {
   promptPermission?: (pending: PermissionPending) => Promise<string> | string;
   onStateChange?: (previous: string, current: string, context: SessionContext) => void;
   inspect?: (event: unknown) => void;
+  state?: RunState;
+}
+
+export interface RunState {
+  dir: string;
+  journal: Journal;
+  events: JournalEvent[];
 }
 
 export type RunAgentOptions = CreateAgentActorOptions;
 
 export interface AgentRunResult {
-  outcome: "finished" | "failed";
+  outcome: "finished" | "failed" | "unknown" | "stopped";
   context: SessionContext;
+  reason?: string;
 }
 
-export function runStepCheck(
+class StopRun extends Error {}
+
+class UnknownOutcome extends Error {}
+
+const RESEND_NOTICE =
+  "[Runner notice] The previous turn for this step was interrupted before it finished. " +
+  "Check the workspace and your own earlier tool calls in this session, then finish the step below. " +
+  "Do not repeat an action that already finished.";
+
+type Entry = "fresh" | Extract<RecoveryAction, { action: "continue" }>["mode"];
+
+function runCommand(
+  command: string,
+  args: string[],
+  options: SpawnOptions & { timeout: number; signal?: AbortSignal },
+): Promise<CommandResult> {
+  const { timeout, signal, ...spawnOptions } = options;
+  return new Promise((resolveResult) => {
+    const child = spawn(command, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let error: Error | undefined;
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    let stopped = false;
+    const finish = (status: number | null, killSignal: NodeJS.Signals | null) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolveResult(commandResult({ status, signal: killSignal, error, stdout, stderr }));
+    };
+    const stop = (reason: Error) => {
+      error ??= reason;
+      stopped = true;
+      child.kill("SIGTERM");
+    };
+    const timer = setTimeout(() => stop(new Error(`${command} ETIMEDOUT`)), timeout);
+    const onAbort = () => stop(new Error("aborted"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.once("error", (spawnError) => { error ??= spawnError; });
+    child.once("exit", (status, killSignal) => {
+      if (stopped) finish(status, killSignal);
+    });
+    child.once("close", finish);
+  });
+}
+
+export async function runStepCheck(
   config: RunnerConfig,
   step?: AgentStep,
   extraVars?: Record<string, unknown>,
   signal?: AbortSignal,
   timeout?: number,
-): CommandResult {
+): Promise<CommandResult> {
   const rawCommand = step?.run;
   if (!rawCommand || !step) return { outcome: "success", output: "", exitCode: null };
   if (signal?.aborted) {
@@ -70,7 +128,6 @@ export function runStepCheck(
   const stepVars = resolveStepVariables(config, step, extraVars);
 
   try {
-    let result: ReturnType<typeof spawnSync>;
     if (typeof rawCommand === "object" && rawCommand !== null && "command" in rawCommand) {
       const command = renderPromptTemplate(rawCommand.command, stepVars);
       const args = (rawCommand.args ?? []).map((a) => renderPromptTemplate(a, stepVars));
@@ -82,10 +139,8 @@ export function runStepCheck(
         const candidate = resolve(baseDir, arg);
         return existsSync(candidate) ? candidate : arg;
       });
-      result = spawnSync(resolvedCommand, resolvedArgs, {
+      return await runCommand(resolvedCommand, resolvedArgs, {
         cwd: workingDir,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, ...stepVars, RUNBOOK_DIR: baseDir },
         signal,
         timeout: effectiveTimeout,
@@ -105,11 +160,9 @@ export function runStepCheck(
             })
             .join(" ")
         : renderedCommand;
-      result = spawnSync(command, {
+      return await runCommand(command, [], {
         cwd: workingDir,
-        encoding: "utf8",
         shell: true,
-        stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
           ...stepVars,
@@ -120,8 +173,6 @@ export function runStepCheck(
         timeout: effectiveTimeout,
       });
     }
-
-    return commandResult(result);
   } catch (error: any) {
     return commandResult({ ...error, error });
   }
@@ -138,7 +189,7 @@ function setFailure(context: SessionContext, failure: StepFailure, preservePendi
   if (!preservePending || !context.pendingFailure) context.pendingFailure = failure;
 }
 
-function applyCheckResult(context: SessionContext, step: AgentStep, result: ReturnType<typeof runStepCheck>): void {
+function applyCheckResult(context: SessionContext, step: AgentStep, result: CommandResult): void {
   const source = commandSource(step.run!);
   context.stepOutcome = result.outcome;
   context.stepExitCode = result.exitCode;
@@ -186,8 +237,19 @@ function initialContext(config: RunnerConfig): SessionContext {
   };
 }
 
+function nextTarget(context: SessionContext): string {
+  if (context.decision === "finish") return "END";
+  if (context.decision === "fail") return "FAIL";
+  return context.decisionTarget ?? "END";
+}
+
+function isInfrastructureFailure(error: unknown, session: AcpSession | null): boolean {
+  if (!session || session.state === "closed") return true;
+  return !(error instanceof RequestError) || error.code === -32000;
+}
+
 export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult> {
-  const { config, onStateChange, inspect, signal } = options;
+  const { config, onStateChange, inspect, signal, state } = options;
 
   const missing = missingExternalValues(config);
   if (missing.length > 0) throw new Error(`missing outside values: ${missing.join("; ")}`);
@@ -229,22 +291,126 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     context.stepOutcome = "failure";
     context.lastError = "aborted";
     onStateChange?.("idle", "failed", context);
-    return { outcome: "failed", context };
+    return { outcome: state ? "stopped" : "failed", context };
   }
+
+  const written: JournalEvent[] = [...(state?.events ?? [])];
+  let callsInVisit = 0;
+  if (state) proxy?.enableLedger();
+
+  const record = async (event: JournalEvent): Promise<void> => {
+    if (!state) return;
+    try {
+      await state.journal.append(event);
+      written.push(event);
+    } catch (error) {
+      await (session as AcpSession | null)?.cancel().catch(() => {});
+      throw new StopRun(`journal write failed (${error instanceof Error ? error.message : String(error)}); the journal may be behind`);
+    }
+  };
+
+  const visits: Record<string, number> = {};
+  let visit = 0;
+  let savedFeedback: { failure: StepFailure; path: string } | undefined;
+
+  const feedbackPath = (stepId: string): string | undefined => {
+    if (!state || !context.pendingFailure) return undefined;
+    if (savedFeedback?.failure !== context.pendingFailure) {
+      const failure = { ...context.pendingFailure, output: redact(context.pendingFailure.output) };
+      savedFeedback = { failure: context.pendingFailure, path: writeFeedback(state.dir, stepId, visit, failure) };
+    }
+    return savedFeedback.path;
+  };
+
+  const sessionOptions = (targetServers: SessionContext["mcpServers"]): SessionOptions => ({
+    cwd: config.cwd,
+    model: context.model,
+    ...(proxy ? { proxy } : { mcpServers: targetServers }),
+    quiet: tracesToStdout(config.trace),
+    signal,
+    confirm: config.confirm,
+    redact,
+    hiddenEnv,
+    promptPermission: options.promptPermission,
+    onUpdate: (_chunk, update) => {
+      inspect?.({
+        type: "runner.event",
+        event: { type: "UPDATE", update },
+      });
+    },
+    onPermissionRequested: (pending) => {
+      context.pendingPermission = pending;
+      transitionTo("awaitingPermission");
+    },
+    onPermissionResolved: () => {
+      context.pendingPermission = null;
+      transitionTo("working");
+    },
+  });
+
+  let resumable: { provider: ProviderId; sessionId: string } | undefined;
+  let attachedInVisit: { provider: ProviderId; sessionId: string; origin: "new" | "carried" } | undefined;
+
+  const reopenSession = async (stepId: string, target: { provider: ProviderId; sessionId: string }): Promise<boolean> => {
+    transitionTo("spawning");
+    context.provider = target.provider;
+    try {
+      const spec = providerSpec(target.provider, config.runbook.providers);
+      context.model = spec.model;
+      const reopened = await AcpSession.reopen(spec, sessionOptions(context.mcpServers), target.sessionId);
+      session = reopened.session;
+      context.sessionId = target.sessionId;
+      context.effectiveModel = reopened.session.effectiveModel;
+      await record({
+        event: "session_resumed", step: stepId, visit,
+        provider: target.provider, sessionId: target.sessionId, method: reopened.method,
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof StopRun) throw error;
+      if (error instanceof SessionUnavailable) return false;
+      throw new StopRun(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const acquireSession = async (stepId: string, mode: Entry): Promise<"new" | "carried" | "reopened" | null> => {
+    const attached = attachedInVisit;
+    const carried = resumable;
+    attachedInVisit = undefined;
+    resumable = undefined;
+    if (mode === "resend") {
+      if (!carried || !(await reopenSession(stepId, carried))) throw new UnknownOutcome("session_unavailable");
+      return "reopened";
+    }
+    if (attached) {
+      if (await reopenSession(stepId, attached)) return "reopened";
+      if (attached.origin === "carried") throw new UnknownOutcome("session_unavailable");
+      return ensureSession(attached.provider, context.mcpServers);
+    }
+    if (!session && carried && carried.provider === context.provider) {
+      await record({
+        event: "session_attached", step: stepId, visit,
+        provider: carried.provider, sessionId: carried.sessionId, origin: "carried",
+      });
+      if (!(await reopenSession(stepId, carried))) throw new UnknownOutcome("session_unavailable");
+      return "reopened";
+    }
+    return ensureSession(context.provider, context.mcpServers);
+  };
 
   const ensureSession = async (
     targetProvider: ProviderId | undefined,
     targetServers = context.mcpServers,
-  ): Promise<boolean> => {
+  ): Promise<"new" | "carried" | null> => {
     if (!targetProvider) {
       context.lastError = "no provider: set provider on the step";
       context.stepOutcome = "failure";
-      return false;
+      return null;
     }
     const currentSession: AcpSession | null = session;
     if (currentSession && !currentSession.needsSwap(targetProvider)) {
       context.mcpServers = targetServers;
-      return true;
+      return "carried";
     }
 
     if (session) {
@@ -260,46 +426,77 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     try {
       const spec = providerSpec(targetProvider, config.runbook.providers);
       context.model = spec.model;
-      session = await AcpSession.spawn(spec, {
-        cwd: config.cwd,
-        model: context.model,
-        ...(proxy ? { proxy } : { mcpServers: targetServers }),
-        quiet: tracesToStdout(config.trace),
-        signal,
-        confirm: config.confirm,
-        redact,
-        hiddenEnv,
-        promptPermission: options.promptPermission,
-        onUpdate: (_chunk, update) => {
-          inspect?.({
-            type: "runner.event",
-            event: { type: "UPDATE", update },
-          });
-        },
-        onPermissionRequested: (pending) => {
-          context.pendingPermission = pending;
-          transitionTo("awaitingPermission");
-        },
-        onPermissionResolved: () => {
-          context.pendingPermission = null;
-          transitionTo("working");
-        },
-      });
+      session = await AcpSession.spawn(spec, sessionOptions(targetServers));
       context.sessionId = session.sessionId;
       context.effectiveModel = session.effectiveModel;
       context.lastError = undefined;
-      return true;
+      return "new";
     } catch (err: any) {
-      context.lastError = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
+      if (state) throw new StopRun(message);
+      context.lastError = message;
       context.stepOutcome = "failure";
-      return false;
+      return null;
     }
   };
 
+  const stopIfAborted = () => {
+    if (state && (aborted || signal?.aborted)) throw new StopRun("aborted");
+  };
+
   try {
+    let entry: Entry = "fresh";
+    if (state && state.events.length === 0) {
+      await record({
+        event: "run_started",
+        v: 1,
+        runbook: runbookHash(config),
+        inputs: inputsHash(config),
+        runner: RUNNER_VERSION,
+        cwd: config.cwd,
+      });
+    } else if (state) {
+      const idempotent = new Set<string>();
+      for (const call of unfinishedTools(state.events)) {
+        if (await proxy?.isIdempotent(call.server, call.tool)) idempotent.add(`${call.server}\0${call.tool}`);
+      }
+      const plan = recover(state.events, config, (server, tool) => idempotent.has(`${server}\0${tool}`));
+      Object.assign(visits, plan.visits);
+      context.loopCounts = plan.loopCounts;
+      if (plan.feedback) {
+        context.pendingFailure = readFeedback(state.dir, plan.feedback);
+        savedFeedback = { failure: context.pendingFailure, path: plan.feedback };
+      }
+      context.provider = plan.provider;
+      resumable = plan.active;
+      const next = plan.next;
+      if (next.action === "done") {
+        context.lastError = next.reason;
+        return { outcome: next.outcome, context, ...(next.reason ? { reason: next.reason } : {}) };
+      }
+      if (next.action === "finish") {
+        await record({ event: "run_finished", outcome: next.outcome });
+        return { outcome: next.outcome, context };
+      }
+      if (next.action === "unknown") throw new UnknownOutcome(next.reason);
+      if (next.action === "start" || next.action === "continue") {
+        const step = config.runbook.steps[next.stepIndex];
+        context.stepIndex = next.stepIndex;
+        context.prompt = resolveStepPrompt(config, step);
+        context.mcpServers = resolveStepServers(config, step);
+      }
+      if (next.action === "continue") {
+        entry = next.mode;
+        visit = next.visit;
+        attachedInVisit = next.attached;
+        callsInVisit = plan.calls;
+      }
+    }
+
     let runFinished = false;
 
     while (!runFinished && context.stepIndex < config.runbook.steps.length) {
+      stopIfAborted();
       if (aborted || signal?.aborted) {
         context.stepOutcome = "failure";
         context.lastError = "aborted";
@@ -312,6 +509,14 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       const currentStep = config.runbook.steps[context.stepIndex];
       context.failure = undefined;
       context.stepExitCode = null;
+      const resumed = entry;
+      entry = "fresh";
+      if (resumed === "fresh") {
+        visit = (visits[currentStep.id] ?? 0) + 1;
+        visits[currentStep.id] = visit;
+        callsInVisit = 0;
+        await record({ event: "step_started", step: currentStep.id, visit });
+      }
 
       let inputVars: Record<string, string> = {};
       let inputsFailed = false;
@@ -330,29 +535,67 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       }
 
       if (inputsFailed) {
+      } else if (resumed === "check") {
+        if (currentStep.run) {
+          const checkResult = await runStepCheck(config, currentStep, inputVars, signal);
+          stopIfAborted();
+          applyCheckResult(context, currentStep, checkResult);
+        } else {
+          context.stepOutcome = "success";
+        }
+        transitionTo("choosingNext");
       } else if (isScriptStep(currentStep)) {
         transitionTo("executingScript");
-        const checkResult = runStepCheck(config, currentStep, inputVars, signal);
+        const checkResult = await runStepCheck(config, currentStep, inputVars, signal);
+        stopIfAborted();
         applyCheckResult(context, currentStep, checkResult);
         transitionTo("choosingNext");
       } else {
-        const ok = await ensureSession(context.provider, context.mcpServers);
-        if (!ok) {
+        const origin = state
+          ? await acquireSession(currentStep.id, resumed)
+          : await ensureSession(context.provider, context.mcpServers);
+        if (!origin) {
           transitionTo("choosingNext");
         } else {
+          if (origin !== "reopened") {
+            await record({
+              event: "session_attached", step: currentStep.id, visit,
+              provider: context.provider!, sessionId: session!.sessionId!, origin,
+            });
+          }
           transitionTo("inSession");
           context.turnText = "";
           try {
             const prompt = resolveStepPrompt(config, currentStep, inputVars);
             transitionTo("working");
             const failure = context.pendingFailure && { ...context.pendingFailure, output: redact(context.pendingFailure.output) };
-            const reply = await session!.prompt(buildPrompt(redact(prompt), failure));
+            const feedback = feedbackPath(currentStep.id);
+            const kind = resumed === "resend" ? "resend" : "step";
+            await record({
+              event: "prompt_sent", step: currentStep.id, visit, sessionId: session!.sessionId!, kind,
+              ...(feedback ? { feedback } : {}),
+            });
+            const blocks = buildPrompt(redact(prompt), failure);
+            if (state && proxy) {
+              proxy.openTurn({ step: currentStep.id, visit, next: callsInVisit + 1, append: record, failed: () => state.journal.failed });
+            }
+            let reply: string;
+            try {
+              reply = await session!.prompt(kind === "resend" ? [{ type: "text", text: RESEND_NOTICE }, ...blocks] : blocks);
+            } finally {
+              if (state && proxy) callsInVisit = (await proxy.closeTurn()) - 1;
+            }
+            await record({
+              event: "prompt_completed", step: currentStep.id, visit, stopReason: session!.stopReason,
+              ...(feedback ? { feedback } : {}),
+            });
             context.pendingFailure = undefined;
             context.turnText = reply;
             context.turnIndex += 1;
 
             if (currentStep.run) {
-              const checkResult = runStepCheck(config, currentStep, inputVars, signal);
+              const checkResult = await runStepCheck(config, currentStep, inputVars, signal);
+              stopIfAborted();
               applyCheckResult(context, currentStep, checkResult);
             } else {
               context.stepOutcome = "success";
@@ -360,7 +603,11 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
               context.stepExitCode = 0;
             }
           } catch (promptErr: any) {
-            context.lastError = promptErr instanceof Error ? promptErr.message : String(promptErr);
+            if (promptErr instanceof StopRun) throw promptErr;
+            stopIfAborted();
+            const message = promptErr instanceof Error ? promptErr.message : String(promptErr);
+            if (state && isInfrastructureFailure(promptErr, session)) throw new StopRun(message);
+            context.lastError = message;
             setFailure(context, {
               stepId: currentStep.id, kind: "agent", source: "session/prompt",
               exitCode: null, output: context.lastError,
@@ -403,6 +650,25 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
                 : null;
       }
 
+      if (state) {
+        for (const call of unfinishedTools(written)) {
+          if (!(await proxy?.isIdempotent(call.server, call.tool))) throw new UnknownOutcome("tool_in_doubt");
+        }
+        const feedback = feedbackPath(currentStep.id);
+        await record({
+          event: "step_completed", step: currentStep.id, visit,
+          outcome: context.lastError ? "failure" : (context.stepOutcome ?? "success"),
+          why: context.why ?? null,
+          next: nextTarget(context),
+          ...(context.decision === "swap" ? { swap: true as const } : {}),
+          ...(feedback ? { feedback } : {}),
+        });
+        if (context.decision === "finish") await record({ event: "run_finished", outcome: "finished" });
+        if (context.decision === "fail") {
+          await record({ event: "run_finished", outcome: "failed", reason: redact(context.lastError ?? `step ${currentStep.id}: failed`) });
+        }
+      }
+
       if (!tracesToStdout(config.trace)) {
         console.log(
           `[runner] next: ${context.decision ?? "?"} → ${context.decisionTarget ?? "end"}`,
@@ -424,6 +690,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       }
 
       if (context.decision === "swap") {
+        resumable = undefined;
         transitionTo("shuttingDown");
         await closeSession();
         context.shutdownIntent = null;
@@ -436,6 +703,25 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     await closeSession();
     transitionTo("finished");
     return { outcome: "finished", context };
+  } catch (error) {
+    if (error instanceof UnknownOutcome) {
+      await closeSession();
+      try {
+        await record({ event: "run_finished", outcome: "unknown", reason: error.message });
+      } catch (recordError) {
+        if (!(recordError instanceof StopRun)) throw recordError;
+        return { outcome: "stopped", context, reason: recordError.message };
+      }
+      context.lastError = error.message;
+      transitionTo("unknown");
+      return { outcome: "unknown", context, reason: error.message };
+    }
+    if (!(error instanceof StopRun)) throw error;
+    context.lastError = error.message;
+    transitionTo("shuttingDown");
+    await closeSession();
+    transitionTo("stopped");
+    return { outcome: "stopped", context, reason: error.message };
   } finally {
     await closeSession();
     if (proxy) await proxy.close();

@@ -15,6 +15,10 @@ function resourceSources(
   return out;
 }
 
+export function readsResources(config: RunnerConfig, step: AgentStep): boolean {
+  return resourceSources(config, step).length > 0;
+}
+
 export async function collectStepInputs(
   config: RunnerConfig,
   step: AgentStep,

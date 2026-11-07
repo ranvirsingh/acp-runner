@@ -57,27 +57,27 @@ test("runner sends a failed check in a second ACP block without a placeholder", 
   } finally { p.close(); }
 });
 
-test("checks retain both streams, real exits, and timeout diagnostics", () => {
+test("checks retain both streams, real exits, and timeout diagnostics", async () => {
   const p = project({ steps: [{ id: "unused", do: "unused" }] });
   const command = { command: process.execPath, args: ["failure.cjs"] };
   try {
     writeFileSync(join(p.dir, "failure.cjs"), "console.log('stdout evidence'); console.error('stderr evidence'); process.exit(9);");
     {
-      const result = runStepCheck(p.config, { id: "check", run: command });
+      const result = await runStepCheck(p.config, { id: "check", run: command });
       assert.equal(result.outcome, "failure");
       assert.equal(result.exitCode, 9);
       assert.match(result.output ?? "", /stdout:\nstdout evidence[\s\S]*stderr:\nstderr evidence/);
     }
     writeFileSync(join(p.dir, "failure.cjs"), "console.log('before timeout'); setInterval(() => {}, 1000);");
     {
-      const result = runStepCheck(p.config, { id: "check", run: command }, undefined, undefined, 200);
+      const result = await runStepCheck(p.config, { id: "check", run: command }, undefined, undefined, 200);
       assert.equal(result.outcome, "failure");
       assert.equal(result.exitCode, null);
       assert.match(result.output ?? "", /before timeout/);
       assert.match(result.output ?? "", /ETIMEDOUT|timed out/i);
     }
     writeFileSync(join(p.dir, "failure.cjs"), "process.exit(4);");
-    assert.match(runStepCheck(p.config, { id: "check", run: command }).output ?? "", /without output/i);
+    assert.match((await runStepCheck(p.config, { id: "check", run: command })).output ?? "", /without output/i);
   } finally { p.close(); }
 });
 
