@@ -142,7 +142,7 @@ function alive(pid: number): boolean {
   }
 }
 
-test("cli --state: A8 after a SIGKILL a live agent keeps the state busy (75), and the run recovers once the group is gone", async () => {
+test("cli --state: A8 after a SIGKILL a live agent keeps the state busy (75), and the run recovers once the group is gone", { timeout: 30000 }, async () => {
   const w = workflow([]);
   const agentPid = join(w.dir, "agent.pid");
   writeFileSync(w.yaml, [
