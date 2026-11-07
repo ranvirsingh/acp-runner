@@ -20,6 +20,7 @@ import type {
   RunEndEvent,
   RunnerConfig,
   RunStartEvent,
+  SessionContext,
   StepEndEvent,
   StepStartEvent,
   ToolEvent,
@@ -564,6 +565,89 @@ test("human log: a step header, indented detail under it, and a named next decis
     assert.match(result.stdout, /^ {2}\[state\] {2}idle → executingScript$/m);
     assert.match(result.stdout, /^\[runner\] next: stay → verify$/m);
     assert.doesNotMatch(result.stdout, /\[runner\] choosingNext →/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("RunRecorder hands telemetry the same redacted events it records, whatever the trace setting", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-rec-"));
+  const config: RunnerConfig = {
+    yamlPath: join(dir, "agent.yaml"),
+    cwd: dir,
+    trace: "off",
+    runbook: { steps: [{ id: "step1", do: "Fetch data" }] },
+  };
+  process.env.ACP_RECORD_TELEMETRY_TOKEN = "tok-telemetry-secret-1234";
+  try {
+    const seen: RecordEvent[] = [];
+    const recorder = new RunRecorder(config, undefined, { record: (event) => seen.push(event), flush: async () => {}, shutdown: async () => {} });
+    recorder.start();
+    recorder.end("failed", "agent printed tok-telemetry-secret-1234");
+
+    assert.deepEqual(seen.map((e) => e.ev), ["run.start", "run.end"]);
+    const end = seen[1] as RunEndEvent;
+    assert.ok(end.error);
+    assert.doesNotMatch(end.error, /tok-telemetry-secret-1234/);
+    assert.equal(existsSync(join(dir, ".runner")), false);
+  } finally {
+    delete process.env.ACP_RECORD_TELEMETRY_TOKEN;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function toolUpdate(recorder: RunRecorder, sessionUpdate: string, toolCallId: string, extra: Record<string, unknown> = {}) {
+  recorder.handleInspect({ type: "runner.event", event: { type: "UPDATE", update: { sessionUpdate, toolCallId, ...extra } } });
+}
+
+test("RunRecorder: a tool only ends on completed or failed, and every tool event carries its call id", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-rec-"));
+  const config: RunnerConfig = { yamlPath: join(dir, "agent.yaml"), cwd: dir, trace: "off", runbook: { steps: [{ id: "step1", do: "x" }] } };
+  try {
+    const seen: RecordEvent[] = [];
+    const recorder = new RunRecorder(config, undefined, { record: (event) => seen.push(event), flush: async () => {}, shutdown: async () => {} });
+    recorder.start();
+    toolUpdate(recorder, "tool_call", "call_1", { title: "Bash" });
+    toolUpdate(recorder, "tool_call_update", "call_1", { status: "in_progress" });
+    toolUpdate(recorder, "tool_call_update", "call_1", { status: "pending" });
+    toolUpdate(recorder, "tool_call_update", "call_1", { content: [] });
+    toolUpdate(recorder, "tool_call_update", "call_1", { status: "failed" });
+    recorder.end("finished");
+
+    const tools = seen.filter((e): e is ToolEvent => e.ev === "tool");
+    assert.deepEqual(tools.map((t) => [t.status, t.call]), [["pending", "call_1"], ["failed", "call_1"]]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("RunRecorder: step.end carries the session, agent identity, model and usage of a model step, and nulls for a script", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-rec-"));
+  const config: RunnerConfig = {
+    yamlPath: join(dir, "agent.yaml"),
+    cwd: dir,
+    trace: "off",
+    runbook: {
+      providers: { builder: { command: "npx", model: "m" } },
+      steps: [{ id: "build", provider: "builder", do: "x" }, { id: "check", run: "true" }],
+    },
+  };
+  try {
+    const seen: RecordEvent[] = [];
+    const recorder = new RunRecorder(config, undefined, { record: (event) => seen.push(event), flush: async () => {}, shutdown: async () => {} });
+    const base = { stepIndex: 0, sessionId: "sess-1", agentInfo: { name: "codex", version: "2" }, effectiveModel: "m", usage: { input: 5, output: 7 } };
+    recorder.onStateChange("idle", "spawning", base as unknown as SessionContext);
+    recorder.onStateChange("working", "choosingNext", { ...base, stepOutcome: "success" } as unknown as SessionContext);
+    const script = { stepIndex: 1, sessionId: "sess-1", agentInfo: { name: "codex", version: "2" }, effectiveModel: "m", usage: { input: 5, output: 7 } };
+    recorder.onStateChange("choosingNext", "executingScript", script as unknown as SessionContext);
+    recorder.onStateChange("executingScript", "choosingNext", { ...script, stepOutcome: "success", stepExitCode: 0 } as unknown as SessionContext);
+    recorder.end("finished");
+
+    const ends = seen.filter((e): e is StepEndEvent => e.ev === "step.end");
+    assert.deepEqual(ends.map(({ step, session, agent, model, usage }) => ({ step, session, agent, model, usage })), [
+      { step: "build", session: "sess-1", agent: { name: "codex", version: "2" }, model: "m", usage: { input: 5, output: 7 } },
+      { step: "check", session: null, agent: null, model: null, usage: null },
+    ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

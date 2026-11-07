@@ -28,7 +28,7 @@ if (heartbeat) {
 
 const envFile = process.env.ACP_FIXTURE_ENV_FILE;
 if (envFile) {
-  writeFileSync(envFile, process.env.ACP_GUARD_SECRET ?? "absent");
+  writeFileSync(envFile, process.env[process.env.ACP_FIXTURE_ENV_NAME ?? "ACP_GUARD_SECRET"] ?? "absent");
 }
 
 if (mode === "split-stderr") {
@@ -273,7 +273,7 @@ async function prompt(ctx: any): Promise<acp.PromptResponse> {
         content: { type: "text", text: reply },
       },
     });
-    return { stopReason: "end_turn" as const };
+    return { stopReason: "end_turn" as const, usage: { totalTokens: 30, inputTokens: 20, outputTokens: 10 } };
 }
 
 app.connect(stream);

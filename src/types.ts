@@ -88,6 +88,17 @@ export interface ProviderDeclaration {
   command: string;
   args?: string[];
   model: string;
+  otel?: { providerName?: string };
+}
+
+export interface AgentIdentity {
+  name: string;
+  version: string;
+}
+
+export interface TokenUsage {
+  input: number;
+  output: number;
 }
 
 export type TransitionWhy =
@@ -137,6 +148,10 @@ export interface StepEndEvent {
   exit: number | null;
   feedback: string | null;
   feedback_truncated?: boolean;
+  session?: string | null;
+  agent?: AgentIdentity | null;
+  model?: string | null;
+  usage?: TokenUsage | null;
 }
 
 export interface ToolEvent {
@@ -147,6 +162,7 @@ export interface ToolEvent {
   status: "pending" | "completed" | "failed";
   step: string;
   ms: number | null;
+  call: string | null;
 }
 
 export interface TransitionEvent {
@@ -240,6 +256,8 @@ export interface SessionContext {
   mcpServers: ResolvedMcpServer[];
   model?: string;
   effectiveModel?: string;
+  agentInfo?: AgentIdentity;
+  usage?: TokenUsage;
   shutdownIntent: "finish" | "swap" | "fail" | null;
   lastError?: string;
   loopCounts: Record<string, number>;

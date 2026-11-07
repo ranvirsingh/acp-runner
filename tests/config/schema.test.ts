@@ -475,3 +475,13 @@ test("loadAgentYaml: rejects a provider name that is neither built in nor declar
   });
 });
 
+
+test("loadAgentYaml: a provider may name its OpenTelemetry provider, and nothing else under otel", () => {
+  const steps = "steps:\n  - id: one\n    provider: writer\n    do: Ship it\n";
+  withYamlFile(`${WRITER}    otel:\n      providerName: aws.bedrock\n${steps}`, (path) => {
+    assert.deepEqual(loadAgentYaml(path).providers?.writer.otel, { providerName: "aws.bedrock" });
+  });
+  for (const otel of ["    otel:\n      providerName: \"\"\n", "    otel:\n      endpoint: http://x\n"]) {
+    withYamlFile(`${WRITER}${otel}${steps}`, (path) => assert.throws(() => loadAgentYaml(path), /otel/));
+  }
+});

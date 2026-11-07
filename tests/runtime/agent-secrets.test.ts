@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgent } from "../../src/runtime/engine.ts";
 import { checkCommand } from "../../src/runtime/check.ts";
-import type { AgentYaml, RunnerConfig } from "../../src/types.ts";
+import type { AgentYaml, RunnerConfig, SessionContext } from "../../src/types.ts";
 
 const fixture = fileURLToPath(new URL("../fixtures/acp-child.ts", import.meta.url));
 const SECRET = "guard-secret-value-1";
@@ -116,6 +116,40 @@ test("check starts the agent without the values referenced as secrets", async ()
     writeFileSync(p.config.yamlPath, JSON.stringify(p.config.runbook));
     assert.equal(await checkCommand(p.config.yamlPath), 0);
     assert.equal(readFileSync(join(p.dir, "agent-env.txt"), "utf8"), "absent");
+  } finally {
+    p.close();
+  }
+});
+
+test("the agent does not inherit the OTLP export headers, which carry the collector credential", async () => {
+  const p = project({ steps: [{ id: "agent", provider: "claude", do: "Say hi." }] });
+  process.env.ACP_FIXTURE_ENV_NAME = "OTEL_EXPORTER_OTLP_HEADERS";
+  process.env.OTEL_EXPORTER_OTLP_HEADERS = "Authorization=Basic%20collector-credential";
+  try {
+    const result = await runAgent({ config: p.config });
+    assert.equal(result.outcome, "finished", result.context.lastError);
+    assert.equal(readFileSync(join(p.dir, "agent-env.txt"), "utf8"), "absent");
+  } finally {
+    delete process.env.ACP_FIXTURE_ENV_NAME;
+    delete process.env.OTEL_EXPORTER_OTLP_HEADERS;
+    p.close();
+  }
+});
+
+test("after a model step the context knows the agent's identity and the turn's token usage", async () => {
+  const p = project({ steps: [{ id: "agent", provider: "claude", do: "Say hi." }] });
+  try {
+    const seen: Array<Pick<SessionContext, "agentInfo" | "usage" | "sessionId">> = [];
+    const result = await runAgent({
+      config: p.config,
+      onStateChange: (_previous, current, context) => {
+        if (current === "choosingNext") seen.push({ agentInfo: context.agentInfo, usage: context.usage, sessionId: context.sessionId });
+      },
+    });
+    assert.equal(result.outcome, "finished", result.context.lastError);
+    assert.deepEqual(seen[0].agentInfo, { name: "acp-fixture", version: "0.0.0" });
+    assert.deepEqual(seen[0].usage, { input: 20, output: 10 });
+    assert.ok(seen[0].sessionId);
   } finally {
     p.close();
   }

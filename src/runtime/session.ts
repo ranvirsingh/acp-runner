@@ -22,7 +22,8 @@ import { RUNNER_VERSION } from "../version.js";
 import { createRedactor } from "../output/redact.js";
 import { needsNewBody } from "../config/yaml.js";
 import type { ProviderSpec } from "./providers.js";
-import type { PermissionPending, ProviderId, ResolvedMcpServer } from "../types.js";
+import type { AgentIdentity, PermissionPending, ProviderId, ResolvedMcpServer, TokenUsage } from "../types.js";
+import { OTLP_HEADER_ENV } from "../output/telemetry.js";
 
 export interface PermissionOption {
   optionId: string;
@@ -260,6 +261,8 @@ export class AcpSession {
   private _sessionId: string | null = null;
   private _registeredMcpServers: acp.McpServer[] = [];
   private _effectiveModel?: string;
+  private _agentInfo?: AgentIdentity;
+  private _lastUsage?: TokenUsage;
   private _offeredModels: Array<{ value: string; name?: string }> = [];
   private turnText = "";
   private _stopReason = "";
@@ -282,6 +285,14 @@ export class AcpSession {
 
   get sessionId(): string | null {
     return this._sessionId;
+  }
+
+  get agentInfo(): AgentIdentity | undefined {
+    return this._agentInfo;
+  }
+
+  get lastUsage(): TokenUsage | undefined {
+    return this._lastUsage;
   }
 
   get effectiveModel(): string | undefined {
@@ -351,7 +362,7 @@ export class AcpSession {
 
     const env = { ...process.env };
     delete env.npm_config_package;
-    for (const name of this.options.hiddenEnv ?? []) delete env[name];
+    for (const name of [...OTLP_HEADER_ENV, ...(this.options.hiddenEnv ?? [])]) delete env[name];
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...env, ...this.options.env },
@@ -471,6 +482,9 @@ export class AcpSession {
       });
 
       this.acpLog(`initialized protocol=${String(initialized.protocolVersion ?? "")}`);
+      if (initialized.agentInfo) {
+        this._agentInfo = { name: initialized.agentInfo.name, version: initialized.agentInfo.version };
+      }
 
       const mcpServers = await this.buildMcpEntries(initialized.agentCapabilities?.mcpCapabilities);
       this._registeredMcpServers = mcpServers;
@@ -616,6 +630,7 @@ export class AcpSession {
     const result = this.turnText;
     this._state = "ready";
     this._stopReason = String(response?.stopReason ?? "");
+    this._lastUsage = response?.usage ? { input: response.usage.inputTokens, output: response.usage.outputTokens } : undefined;
 
     if (response?.stopReason === "cancelled") {
       throw new Error("turn cancelled");
