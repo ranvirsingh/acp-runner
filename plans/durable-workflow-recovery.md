@@ -455,7 +455,7 @@ A swap, for example `reset_review` (script) → `review` (provider `reviewer`):
 These changes are in naplanwriting. They are Engineer-specific, so they stay out of the generic schema.
 
 1. **Stable paths.** Use `worktree=$RUNNER_TEMP/engineer-$number/repo`. On a GitHub-hosted runner, `RUNNER_TEMP` is the same path on every VM.
-2. **One state directory per runbook.** `planning.yaml` gets `--state "$state/planning"`. `agent.yaml` gets `--state "$state/agent"`. `$state` is `$reports/state/run-$GITHUB_RUN_ID`. A re-run attempt of the same GitHub run has the same run id.
+2. **One state directory per runner invocation.** Engineer runs `agent.yaml` twice for one job: first with `ENGINEER_PHASE=implement`, then with `ENGINEER_PHASE=validate`. Each call gets its own directory. `planning.yaml` gets `--state "$state/planning"`. The implement call gets `--state "$state/implement"`. The validate call gets `--state "$state/validate"`. The single `agent.yaml` run for ci-fix and review-fix gets `--state "$state/agent"`. Do not share one directory between the implement and validate calls: the validate call would read `run_finished` from the implement journal, exit 0, and skip the reviews. `$state` is `$reports/state/run-$GITHUB_RUN_ID`. A re-run attempt of the same GitHub run has the same run id.
 3. **Launcher record.** The launcher writes `$state/launcher.json` with its phase (`planning`, `draft`, `agent`, `publish`), `pr`, `title`, `plan_sha`, `branch_head` and `workspace_ref`. It saves `plan-pr.md` next to it. The publish phase reads these on resume.
 4. **Split the Codex home.** `CODEX_HOME` holds `auth.json`, which is a secret. Keep the Codex session store in `$state/codex-sessions` and link it into `CODEX_HOME`. Write `auth.json` new on each launch. Never save `auth.json`.
 5. **Workspace checkpoint.** The launcher makes one after each successful runner phase, before it publishes anything, and when the runner exits 75 or the job gets a stop signal:
@@ -553,6 +553,7 @@ Phase 4 cases taken from the engine:
 
 - **Scripts run again after a crash during a script step.** Engineer's checks are safe to run twice. `reset-review.sh` is not, until section 9 item 10 is done. Other runbooks must make the same promise. The README must say so.
 - **Scripts are not in the runbook hash.** A changed check script does not invalidate a journal.
+- **The inputs hash covers runbook inputs only.** A bash `run` step that reads an environment variable directly (for example Engineer's `ENGINEER_PHASE`) is not in the hash. If that variable changes between attempts, the runner does not detect it and resumes the old journal. Callers must keep such variables fixed for one state directory, or pass them as inputs.
 - **Steps with MCP resource inputs** stop with `unknown` after a crash once a prompt went out. Engineer has none.
 - **`session/resume` gives no history.** The runner cannot inspect what an interrupted turn did.
 - **A resend can repeat an outside action that finished.** The ledger stops on an action with an unknown outcome. It does not stop the agent from asking for a finished action again. The fixed resend line and the agent's own session record are the only guard. A tool that must never run twice needs its own idempotency check.
