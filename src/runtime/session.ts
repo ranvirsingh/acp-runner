@@ -258,6 +258,7 @@ export class AcpSession {
   private _effectiveModel?: string;
   private _offeredModels: Array<{ value: string; name?: string }> = [];
   private turnText = "";
+  private _stopReason = "";
   private readonly toolNames = new Map<string, string>();
   private readonly acpLog: (message: string) => void;
   private closing = false;
@@ -279,6 +280,10 @@ export class AcpSession {
 
   get effectiveModel(): string | undefined {
     return this._effectiveModel;
+  }
+
+  get stopReason(): string {
+    return this._stopReason;
   }
 
   get offeredModels(): Array<{ value: string; name?: string }> {
@@ -558,6 +563,7 @@ export class AcpSession {
 
     const result = this.turnText;
     this._state = "ready";
+    this._stopReason = String(response?.stopReason ?? "");
 
     if (response?.stopReason === "cancelled") {
       throw new Error("turn cancelled");

@@ -53,7 +53,7 @@ async function runFixture(
   bins: string,
   options: Parameters<typeof config>[0],
   extra: Partial<RunnerConfig> = {},
-): Promise<{ outcome: "finished" | "failed"; turnText: string; lastError?: string }> {
+): Promise<{ outcome: string; turnText: string; lastError?: string }> {
   let turnText = "";
   const result = await withPath(bins, () =>
     runAgent({

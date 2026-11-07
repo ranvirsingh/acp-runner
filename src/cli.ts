@@ -12,7 +12,7 @@ import { pickAllowOption, pickRejectOption } from "./runtime/session.js";
 import { loadAgentYaml, resolveRunbookPath } from "./config/yaml.js";
 import { stateLog, stepLog } from "./output/logs.js";
 import { RunRecorder } from "./output/record.js";
-import { runAgent } from "./index.js";
+import { runAgent, type AgentRunResult } from "./index.js";
 import { lintCommand } from "./config/lint.js";
 import { planCommand } from "./config/plan.js";
 import { checkCommand } from "./runtime/check.js";
@@ -147,7 +147,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   recorder.start();
 
   let loggedStep = -1;
-  let runOutcome: "finished" | "failed" = "failed";
+  let runOutcome: AgentRunResult["outcome"] = "failed";
   let lastError: string | undefined;
 
   const controller = new AbortController();
@@ -192,10 +192,10 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     lastError = error instanceof Error ? error.message : String(error);
   } finally {
     process.off("SIGINT", onSigint);
-    recorder.end(runOutcome, lastError ?? null);
+    recorder.end(runOutcome === "finished" ? "finished" : "failed", lastError ?? null);
   }
 
-  if (runOutcome === "failed") {
+  if (runOutcome !== "finished") {
     if (!tracesToStdout(config.trace)) {
       console.error(redact(`[runner] failed: ${lastError ?? "unknown error"}`));
     }

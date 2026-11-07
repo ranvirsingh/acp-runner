@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { createJournal, journalWriter, readFeedback, readJournal, type JournalEvent } from "../../src/runtime/journal.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -343,4 +344,178 @@ test("runStepCheck: an abort during a long command stops it promptly", async () 
   const result = await runStepCheck(config, { id: "check", run: "sleep 5" }, undefined, controller.signal);
   assert.equal(result.outcome, "failure");
   assert.ok(Date.now() - started < 2000, `took ${Date.now() - started}ms`);
+});
+
+function journalState(events: JournalEvent[] = [], failAfter?: string) {
+  const dir = mkdtempSync(join(tmpdir(), "engine-state-"));
+  const write = journalWriter(dir);
+  const written: JournalEvent[] = [];
+  const journal = createJournal((event) => {
+    if (failAfter && written.some((item) => item.event === failAfter)) throw new Error("injected journal failure");
+    write(event);
+    written.push(event);
+  });
+  return { state: { dir, journal, events }, written };
+}
+
+function shape(events: JournalEvent[]): string[] {
+  return events.map((event) => {
+    const { event: name, ...rest } = event as Record<string, unknown> & { event: string };
+    const keep = ["step", "visit", "origin", "kind", "outcome", "why", "next", "swap", "stopReason", "feedback", "reason"];
+    return [name, ...keep.filter((key) => key in rest).map((key) => `${key}=${String(rest[key])}`)].join(" ");
+  });
+}
+
+function validateTwice(dir: string): string {
+  const counter = join(dir, "validate-count");
+  return `node -e 'const fs=require("fs"); const c=Number(fs.existsSync("${counter}")?fs.readFileSync("${counter}","utf8"):0)+1; fs.writeFileSync("${counter}",String(c)); if (c<2) { console.log("validate says broken"); process.exit(1) }'`;
+}
+
+test("journal: implement → validate → implement writes the 8.1 event order and sends the saved feedback", async () => {
+  const { state, written } = journalState();
+  const capture = join(state.dir, "capture.jsonl");
+  const config = configFor({
+    providers: { builder: { command: "bun", args: [fixturePath, `--capture=${capture}`], model: "test-model" } },
+    steps: [
+      { id: "implement", provider: "builder", do: "Implement", on: { success: "validate" } },
+      { id: "validate", run: validateTwice(state.dir), on: { failure: "implement" } },
+    ],
+  });
+  const result = await runAgent({ config, state });
+  assert.equal(result.outcome, "finished");
+  assert.deepEqual(shape(written), [
+    "run_started",
+    "step_started step=implement visit=1",
+    "session_attached step=implement visit=1 origin=new",
+    "prompt_sent step=implement visit=1 kind=step",
+    "prompt_completed step=implement visit=1 stopReason=end_turn",
+    "step_completed step=implement visit=1 outcome=success why=on.success next=validate",
+    "step_started step=validate visit=1",
+    "step_completed step=validate visit=1 outcome=failure why=on.failure next=implement feedback=feedback/validate-1.json",
+    "step_started step=implement visit=2",
+    "session_attached step=implement visit=2 origin=carried",
+    "prompt_sent step=implement visit=2 kind=step feedback=feedback/validate-1.json",
+    "prompt_completed step=implement visit=2 stopReason=end_turn feedback=feedback/validate-1.json",
+    "step_completed step=implement visit=2 outcome=success why=on.success next=validate",
+    "step_started step=validate visit=2",
+    "step_completed step=validate visit=2 outcome=success why=fallthrough next=END",
+    "run_finished outcome=finished",
+  ]);
+  const started = written[0] as Extract<JournalEvent, { event: "run_started" }>;
+  assert.match(started.runbook, /^sha256:/);
+  assert.match(started.inputs, /^sha256:/);
+  assert.equal(started.cwd, config.cwd);
+  const attached = written.filter((event) => event.event === "session_attached") as Array<{ sessionId: string }>;
+  assert.equal(attached[0].sessionId, attached[1].sessionId);
+  assert.match(readFeedback(state.dir, "feedback/validate-1.json").output, /validate says broken/);
+  const prompts = readFileSync(capture, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.match(JSON.stringify(prompts[1].prompt), /validate says broken/);
+});
+
+test("journal: terminal targets, a swap and a failure with no transition", async () => {
+  {
+    const { state, written } = journalState();
+    const config = configFor({
+      providers: { reviewer: fixtureProvider },
+      steps: [
+        { id: "reset_review", run: "true" },
+        { id: "review", provider: "reviewer", do: "Review", on: { success: "END" } },
+      ],
+    });
+    const result = await runAgent({ config, state });
+    assert.equal(result.outcome, "finished");
+    assert.deepEqual(shape(written).slice(1, 3), [
+      "step_started step=reset_review visit=1",
+      "step_completed step=reset_review visit=1 outcome=success why=fallthrough next=review swap=true",
+    ]);
+    assert.deepEqual(shape(written).slice(-2), [
+      "step_completed step=review visit=1 outcome=success why=on.success next=END",
+      "run_finished outcome=finished",
+    ]);
+  }
+  {
+    const { state, written } = journalState();
+    const config = configFor({ steps: [{ id: "only", run: "false" }] });
+    const result = await runAgent({ config, state });
+    assert.equal(result.outcome, "failed");
+    assert.deepEqual(shape(written).slice(-2, -1), ["step_completed step=only visit=1 outcome=failure why=null next=FAIL feedback=feedback/only-1.json"]);
+    assert.match(shape(written).at(-1)!, /^run_finished outcome=failed reason=/);
+  }
+  {
+    const { state, written } = journalState();
+    const config = configFor({ steps: [{ id: "gate", run: "false", on: { failure: "FAIL" } }] });
+    await runAgent({ config, state });
+    assert.match(shape(written).at(-2)!, /why=on.failure next=FAIL/);
+  }
+});
+
+test("journal: a prompt error from the agent fails the step with why null and keeps the pending feedback", async () => {
+  const { state, written } = journalState();
+  process.env.ACP_FIXTURE_MODE = "reject-prompt";
+  try {
+    const config = configFor({ steps: [{ id: "work", do: "Work" }] });
+    const result = await runAgent({ config, state });
+    assert.equal(result.outcome, "failed");
+    assert.deepEqual(shape(written).slice(-2, -1), ["step_completed step=work visit=1 outcome=failure why=null next=FAIL feedback=feedback/work-1.json"]);
+  } finally {
+    delete process.env.ACP_FIXTURE_MODE;
+  }
+});
+
+test("journal: an agent that dies during a prompt stops the run with the visit open", async () => {
+  const { state, written } = journalState();
+  process.env.ACP_FIXTURE_MODE = "exit-during-prompt";
+  try {
+    const config = configFor({ steps: [{ id: "work", do: "Work" }] });
+    const result = await runAgent({ config, state });
+    assert.equal(result.outcome, "stopped");
+    assert.equal(shape(written).at(-1), "prompt_sent step=work visit=1 kind=step");
+  } finally {
+    delete process.env.ACP_FIXTURE_MODE;
+  }
+});
+
+test("journal: an agent that does not spawn stops the run without step_completed", async () => {
+  const { state, written } = journalState();
+  const config = configFor({
+    providers: { broken: { command: "no-such-binary-1111", model: "test-model" } },
+    steps: [{ id: "work", provider: "broken", do: "Work" }],
+  });
+  const result = await runAgent({ config, state });
+  assert.equal(result.outcome, "stopped");
+  assert.equal(shape(written).at(-1), "step_started step=work visit=1");
+});
+
+test("journal: a failed append starts no later action and stops the run", async () => {
+  const { state, written } = journalState([], "session_attached");
+  const capture = join(state.dir, "capture.jsonl");
+  const config = configFor({
+    providers: { builder: { command: "bun", args: [fixturePath, `--capture=${capture}`], model: "test-model" } },
+    steps: [{ id: "work", provider: "builder", do: "Work" }],
+  });
+  const result = await runAgent({ config, state });
+  assert.equal(result.outcome, "stopped");
+  assert.equal(shape(written).at(-1), "session_attached step=work visit=1 origin=new");
+  assert.equal(existsSync(capture), false);
+  assert.equal(readJournal(state.dir).length, written.length);
+});
+
+test("journal: an abort stops the run with no terminal event", async () => {
+  const { state, written } = journalState();
+  const controller = new AbortController();
+  const config = configFor({ steps: [{ id: "long", run: "sleep 5" }] });
+  setTimeout(() => controller.abort(), 200);
+  const result = await runAgent({ config, state, signal: controller.signal });
+  assert.equal(result.outcome, "stopped");
+  assert.equal(shape(written).at(-1), "step_started step=long visit=1");
+});
+
+test("without state the engine still fails an agent that dies, as before", async () => {
+  process.env.ACP_FIXTURE_MODE = "exit-during-prompt";
+  try {
+    const result = await runAgent({ config: configFor({ steps: [{ id: "work", do: "Work" }] }) });
+    assert.equal(result.outcome, "failed");
+  } finally {
+    delete process.env.ACP_FIXTURE_MODE;
+  }
 });
