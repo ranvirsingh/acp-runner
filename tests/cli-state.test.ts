@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "../src/cli.ts";
 import { runCli, spawnCli } from "./helpers/run-cli.ts";
 
@@ -119,5 +120,73 @@ test("cli --state: A16 SIGTERM during a long check stops the script group, exits
     assert.equal(existsSync(join(w.state, "agent.state.lock")), false);
   } finally {
     if (child.exitCode === null) child.kill("SIGKILL");
+  }
+});
+
+const fixturePath = join(fileURLToPath(import.meta.url), "../fixtures/acp-child.ts");
+
+async function until(check: () => boolean, what: string): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > 15000) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("cli --state: A8 after a SIGKILL a live agent keeps the state busy (75), and the run recovers once the group is gone", async () => {
+  const w = workflow([]);
+  const agentPid = join(w.dir, "agent.pid");
+  writeFileSync(w.yaml, [
+    "providers:",
+    "  builder:",
+    "    command: bun",
+    `    args: [${JSON.stringify(fixturePath)}]`,
+    "    model: test-model",
+    "steps:",
+    "  - id: work",
+    "    provider: builder",
+    "    do: Work",
+    "",
+  ].join("\n"));
+  const child = spawnCli(["run", w.yaml, "--cwd", w.dir, "--state", w.state, "--trace", "off"], {
+    env: { ACP_FIXTURE_MODE: "hang", ACP_FIXTURE_PID_FILE: agentPid, ACP_FIXTURE_HEARTBEAT: join(w.dir, "heartbeat") },
+  });
+  let group = 0;
+  try {
+    await until(() => w.events().includes("prompt_sent"), "prompt_sent");
+    group = JSON.parse(readFileSync(join(w.state, "agent.state.lock"), "utf8")).pgid;
+    child.kill("SIGKILL");
+    process.kill(group, "SIGKILL");
+    await until(() => !alive(group), "runner exit");
+    const agent = Number(readFileSync(agentPid, "utf8"));
+    const beats = readFileSync(join(w.dir, "heartbeat"), "utf8").length;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(alive(agent));
+    assert.ok(readFileSync(join(w.dir, "heartbeat"), "utf8").length > beats);
+    const busy = w.run();
+    assert.equal(busy.status, 75, busy.stderr);
+    process.kill(-group, "SIGKILL");
+    await until(() => !alive(agent), "agent exit");
+    const recovered = runCli(["run", w.yaml, "--cwd", w.dir, "--state", w.state, "--trace", "off"], {
+      env: { ACP_FIXTURE_REOPEN: "resume" },
+      timeout: 60000,
+    });
+    assert.equal(recovered.status, 0, recovered.stderr);
+    const lines = w.journal().trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(lines.some((event) => event.event === "prompt_sent" && event.kind === "resend"));
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL");
+    try {
+      if (group) process.kill(-group, "SIGKILL");
+    } catch {}
   }
 });

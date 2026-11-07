@@ -229,3 +229,52 @@ test("A5c: a reopen that needs a login, or an agent that does not spawn, stops t
     assert.deepEqual(third.added, []);
   });
 });
+
+test("A5d: a stop after prompt_sent reopens the session and resends the prompt and feedback once; a stop during the resend ends as resend_interrupted", async () => {
+  const p = builderProject(passback);
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume" }, async () => {
+    await runOnce(p.config, p.dir, (event) => event.event === "prompt_sent" && event.visit === 2);
+    assert.equal(p.prompts().length, 2);
+    const second = await runOnce(p.config, p.dir, (event) => event.event === "prompt_sent");
+    assert.equal(second.result.outcome, "stopped");
+    assert.deepEqual(names(second.added), ["session_resumed implement 2", "prompt_sent implement 2"]);
+    const resend = second.added[1] as { kind: string; feedback?: string };
+    assert.equal(resend.kind, "resend");
+    assert.equal(resend.feedback, "feedback/validate-1.json");
+    const prompt = p.prompts()[2].prompt as Array<{ text: string }>;
+    assert.equal(prompt.length, 3);
+    assert.match(prompt[0].text, /interrupted/);
+    assert.equal(prompt[1].text, "Implement");
+    assert.match(prompt[2].text, /validate-feedback-text/);
+    const third = await runOnce(p.config, p.dir);
+    assert.equal(third.result.outcome, "unknown");
+    assert.deepEqual(third.added, [{ event: "run_finished", outcome: "unknown", reason: "resend_interrupted" }]);
+    assert.equal(p.prompts().length, 3);
+  });
+});
+
+test("A5e: a stop after prompt_sent with the session unavailable ends as unknown and sends nothing", async () => {
+  const p = builderProject([{ id: "implement", provider: "builder", do: "Implement" }]);
+  await runOnce(p.config, p.dir, (event) => event.event === "prompt_sent");
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume", ACP_FIXTURE_REOPEN_ERROR: "not-found" }, async () => {
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "unknown");
+    assert.deepEqual(second.added, [{ event: "run_finished", outcome: "unknown", reason: "session_unavailable" }]);
+    assert.equal(p.prompts().length, 1);
+  });
+});
+
+test("A17: an agent that dies during a live prompt stops with no step_completed, and the next runner resends", async () => {
+  const p = builderProject([{ id: "implement", provider: "builder", do: "Implement" }]);
+  await withEnv({ ACP_FIXTURE_MODE: "exit-during-prompt" }, async () => {
+    const first = await runOnce(p.config, p.dir);
+    assert.equal(first.result.outcome, "stopped");
+    assert.ok(!readJournal(p.dir).some((event) => event.event === "step_completed"));
+  });
+  await withEnv({ ACP_FIXTURE_REOPEN: "resume" }, async () => {
+    const second = await runOnce(p.config, p.dir);
+    assert.equal(second.result.outcome, "finished");
+    assert.deepEqual(names(second.added).slice(0, 2), ["session_resumed implement 1", "prompt_sent implement 1"]);
+    assert.equal((second.added[1] as { kind: string }).kind, "resend");
+  });
+});

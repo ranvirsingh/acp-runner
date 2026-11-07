@@ -19,6 +19,13 @@ if (pidFile) {
   writeFileSync(pidFile, String(process.pid));
 }
 
+const heartbeat = process.env.ACP_FIXTURE_HEARTBEAT;
+if (heartbeat) {
+  setInterval(() => appendFileSync(heartbeat, "beat\n"), 50);
+  process.stdin.on("error", () => {});
+  process.stdout.on("error", () => {});
+}
+
 const envFile = process.env.ACP_FIXTURE_ENV_FILE;
 if (envFile) {
   writeFileSync(envFile, process.env.ACP_GUARD_SECRET ?? "absent");

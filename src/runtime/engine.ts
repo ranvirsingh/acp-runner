@@ -61,6 +61,11 @@ class StopRun extends Error {}
 
 class UnknownOutcome extends Error {}
 
+const RESEND_NOTICE =
+  "[Runner notice] The previous turn for this step was interrupted before it finished. " +
+  "Check the workspace and your own earlier tool calls in this session, then finish the step below. " +
+  "Do not repeat an action that already finished.";
+
 type Entry = "fresh" | Extract<RecoveryAction, { action: "continue" }>["mode"];
 
 function runCommand(
@@ -558,11 +563,13 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
             transitionTo("working");
             const failure = context.pendingFailure && { ...context.pendingFailure, output: redact(context.pendingFailure.output) };
             const feedback = feedbackPath(currentStep.id);
+            const kind = resumed === "resend" ? "resend" : "step";
             await record({
-              event: "prompt_sent", step: currentStep.id, visit, sessionId: session!.sessionId!, kind: "step",
+              event: "prompt_sent", step: currentStep.id, visit, sessionId: session!.sessionId!, kind,
               ...(feedback ? { feedback } : {}),
             });
-            const reply = await session!.prompt(buildPrompt(redact(prompt), failure));
+            const blocks = buildPrompt(redact(prompt), failure);
+            const reply = await session!.prompt(kind === "resend" ? [{ type: "text", text: RESEND_NOTICE }, ...blocks] : blocks);
             await record({
               event: "prompt_completed", step: currentStep.id, visit, stopReason: session!.stopReason,
               ...(feedback ? { feedback } : {}),
