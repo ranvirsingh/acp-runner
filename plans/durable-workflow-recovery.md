@@ -312,7 +312,7 @@ What must survive besides the session id:
 
 | Item | Where it lives | If it is missing |
 | --- | --- | --- |
-| The agent's session store | codex-acp 2.5.0: Codex threads under `CODEX_HOME`. Phase 0 finds the exact subfolder | Session unavailable |
+| The agent's session store | codex-acp 2.5.0: `CODEX_HOME/sessions/` (phase 0, 10.1) | Session unavailable. codex-acp 2.5.0 reports it as `-32603`, so the runner exits 75 (10.1) |
 | Agent login | `CODEX_HOME/auth.json`, written from the launcher's secret | Exit 75 |
 | The working directory, same absolute path | `--cwd` | Refuse at start-up |
 | The workspace the session refers to | Git worktree, including uncommitted and untracked files | The caller must refuse to start the runner (section 9) |
@@ -494,7 +494,7 @@ Crash points in tests are deterministic. `runAgent` takes the journal writer as 
 
 | Phase | Work | Tests first |
 | --- | --- | --- |
-| 0 | Spike, no code merged. With codex-acp 2.5.0 from cache `c51fd8e4d04c136d`: (a) resume a session in a new process with the same `CODEX_HOME` and `cwd`. (b) Do the same after a copy of the session store into a new `CODEX_HOME`. (c) Find the session subfolder. (d) Record the error for an unknown session id and for a missing login. | A written result in this plan |
+| 0 | Spike, no code merged. With codex-acp 2.5.0 from cache `c51fd8e4d04c136d`: (a) resume a session in a new process with the same `CODEX_HOME` and `cwd`. (b) Do the same after a copy of the session store into a new `CODEX_HOME`. (c) Find the session subfolder. (d) Record the error for an unknown session id and for a missing login. Done on 2026-11-07, results in 10.1 | A written result in this plan |
 | 1 | `src/runtime/journal.ts`: append with `fsync`, read, torn tail, corruption, lock with process groups, runbook hash | `tests/runtime/journal.test.ts` |
 | 2 | `--state` flag, the process-group re-start (7.2), start-up decisions (7.4), `inputs` fingerprint, exit codes, SIGTERM | `tests/cli.test.ts` |
 | 3 | Write points in `engine.ts`, feedback files, `swap`, `why: null` paths. Prompt and spawn errors split into infrastructure failures (exit 75, visit stays open) and other failures. Script steps and checks move from `spawnSync` to an awaited `spawn`. Signal handlers can then run during a long check ([engine.ts:85](../src/runtime/engine.ts:85), [engine.ts:108](../src/runtime/engine.ts:108)) | `tests/runtime/engine.test.ts`: event order for 8.1 and 8.4 |
@@ -504,6 +504,28 @@ Crash points in tests are deterministic. `runAgent` takes the journal writer as 
 | 6b | Tool-call ledger in `McpProxy.callTool`: annotations, turn gate, drain before `prompt_completed`, one append queue, the in-doubt rule at its three points. Phase 0 also lists the annotations of Engineer's three MCP servers. | `tests/mcp/proxy.test.ts` with the fixture MCP server in [tests/fixtures/mcp-tools](../tests/fixtures/mcp-tools) |
 | 7 | README section. A note in the create-acp-agent skill that script steps must be safe to run twice, that a crash can make an agent step run its prompt a second time, and that actions outside the workspace must go through MCP tools | None (docs) |
 | 8 | Release 0.1.0-beta.6. Engineer integration branch (section 9) | The manual test A3 |
+
+### 10.1 Phase 0 results (2026-11-07)
+
+Setup: codex-acp 2.5.0 (`node dist/index.js` from cache `c51fd8e4d04c136d`, bundled `@openai/codex` 0.165.0). A new temporary `CODEX_HOME` held only a copy of the user's `auth.json`. A small ACP client sent `initialize`, then `session/new`, `session/resume` or `session/load`, then one short prompt. Each call ran in its own process.
+
+| Check | Result |
+| --- | --- |
+| Capabilities | `initialize` returns `loadSession: true` and `sessionCapabilities.resume`. `authMethods` are `api-key` and `chat-gpt`. |
+| (a) Resume, new process, same `CODEX_HOME` and `cwd` | Pass. Process 1 asked for the word PINEAPPLE. Process 2 sent `session/resume` and asked which word it replied with. The reply was `PINEAPPLE`. |
+| (b) Resume after a copy into a new `CODEX_HOME` | Pass. The new `CODEX_HOME` held only a fresh `auth.json` and a copy of `sessions/`. No SQLite file was copied. The reply was `PINEAPPLE`. |
+| (c) Session subfolder | `CODEX_HOME/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`. One file per thread. The SQLite files at the top of `CODEX_HOME` (`state_5`, `thread_history_1`, `logs_2`, `goals_1`, `queue_1`, `memories_1`) are not needed for a resume. |
+| (d) Unknown session id | Both `session/resume` and `session/load` return `-32603` (`Internal error`), with `data.details` = `no rollout found for thread id <id>`. They do **not** return `-32002`. |
+| (d) Missing login | `session/new` and `session/resume` both return `-32000` (`Authentication required`). The session store was present for the resume test. |
+| `session/load` of a known session | Accepted. It sent 8 `session/update` notifications of history replay before the response. |
+| (e) Engineer MCP annotations | `configuration.inspect_configuration`: `readOnlyHint: true`, `idempotentHint: true`. `observability` 0.2.3: all 13 tools have no annotations. `gcloud` 0.5.3: `run_gcloud_command` has no annotations (read from the bundle source; the server did not start here without the gcloud CLI). |
+
+Effect on the design:
+
+- **(a) and (b) pass**, so phase 5 can go ahead.
+- **Section 9 item 4** can link only `sessions/` into `CODEX_HOME`.
+- **7.7 step 7 and codex-acp 2.5.0.** codex-acp reports a missing session as `-32603`, so the runner reads it as "any other error" and exits 75. It does not reach "session unavailable" (A5a, A5b, A5e) with this adapter. A missing Codex store therefore gives exit 75 on every attempt, not `unknown`. The runner keeps the mapping in 7.7 as written (exit 75 is the safe side). This is reported to the coordinator as a finding. The fixture tests use `-32002` as the plan says.
+- **7.9 and Engineer.** The ledger treats a tool with no annotations as one that may change something outside. So every `observability` and `gcloud` call in Engineer gets `tool_started` and `tool_completed`, and a crash during one of them stops the run as `unknown`, reason `tool_in_doubt`. Only `inspect_configuration` is skipped. Engineer's integration (phase 8) must accept this or get annotations upstream.
 
 Phase 4 cases taken from the engine:
 
